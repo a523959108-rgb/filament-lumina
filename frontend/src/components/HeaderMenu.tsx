@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useIsPresent } from "framer-motion";
+import { getFilamentPickerConfig, type FilamentPickerLink } from "../integrations/filamentPicker/config";
 import { useI18n } from "../i18n/context";
 import { useOutsideInteraction } from "../hooks/useOutsideInteraction";
 import { BugReportButton } from "./BugReportButton";
@@ -10,6 +11,7 @@ import { HeaderMenuItem } from "./ui/HeaderMenuItem";
 import {
   HEADER_ICON_BUTTON_CLASS,
   HEADER_MENU_DIVIDER_CLASS,
+  HEADER_MENU_ITEM_CLASS,
   HEADER_MENU_PANEL_CLASS,
 } from "./ui/headerControls";
 
@@ -79,6 +81,7 @@ function resolveTriggerAlert(
  */
 export function HeaderMenu({ backendStatus, reproTicketId, onReportBug, onOpenAbout }: HeaderMenuProps) {
   const { t } = useI18n();
+  const filamentPicker = getFilamentPickerConfig();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -165,6 +168,19 @@ export function HeaderMenu({ backendStatus, reproTicketId, onReportBug, onOpenAb
                   <circle cx="12" cy="12" r="9" /><path strokeLinecap="round" d="M12 11v6m0-10v.01" />
                 </svg>} />
             )}
+            {filamentPicker.integrationEnabled && (
+              <>
+                <div className={HEADER_MENU_DIVIDER_CLASS} />
+                <div className="flex flex-col gap-1" data-testid="filament-picker-links">
+                  {filamentPicker.links.map((link) => (
+                    <FilamentPickerLinkRow key={link.id} link={link} label={t(link.labelKey)} onSelect={() => close(false)} />
+                  ))}
+                  <p className="px-3 pb-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                    {t("filament_picker_based_on")}
+                  </p>
+                </div>
+              </>
+            )}
             <BugReportButton onClick={onReportBug} />
             <div className={HEADER_MENU_DIVIDER_CLASS} />
             <div role="status" className="flex flex-col gap-1.5 px-3 py-1.5">
@@ -175,6 +191,37 @@ export function HeaderMenu({ backendStatus, reproTicketId, onReportBug, onOpenAb
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function FilamentPickerLinkRow({
+  link,
+  label,
+  onSelect,
+}: {
+  link: FilamentPickerLink;
+  label: string;
+  onSelect: () => void;
+}) {
+  return (
+    <a
+      href={link.href}
+      target={link.target}
+      rel="noopener"
+      onClick={onSelect}
+      className={HEADER_MENU_ITEM_CLASS}
+    >
+      <span
+        aria-hidden="true"
+        className="flex h-4 w-4 shrink-0 items-center justify-center text-slate-500 dark:text-slate-400"
+      >
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10 13a5 5 0 0 0 7.07.07l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15" />
+          <path d="M14 11a5 5 0 0 0-7.07-.07l-2 2A5 5 0 0 0 7 20l1.15-1.15" />
+        </svg>
+      </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </a>
   );
 }
 
