@@ -8,11 +8,13 @@
 
 import React from 'react';
 import ActionBar from '../sections/ActionBar';
+import BuyPanel from '../../integrations/filamentPicker/BuyPanel';
 
 export default React.memo(function ActionBarWidgetContent() {
   return (
     <div className="p-3">
       <ActionBar />
+      <BuyPanel />
     </div>
   );
 });
