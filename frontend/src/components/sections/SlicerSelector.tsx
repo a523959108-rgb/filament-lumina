@@ -549,6 +549,11 @@ export default function SlicerSelector({
       {outputHint && (
         <p role="status" className="text-xs text-slate-500 dark:text-slate-400">{outputHint}</p>
       )}
+      {!largeFormat && (
+        <p data-testid="slicer-credit-hint" className="text-xs leading-4 text-slate-500 dark:text-slate-400">
+          {t("slicer_credit_hint")}
+        </p>
+      )}
       {error && (
         <p className="text-xs text-red-400">{error}</p>
       )}
