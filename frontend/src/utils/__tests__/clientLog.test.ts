@@ -133,6 +133,23 @@ describe("clientLog", () => {
     );
   });
 
+  it("truncates oversized client-log relay payloads", () => {
+    postClientLog("probe: large", {
+      scope: "ops-check",
+      phase: "manual",
+      details: { blob: "C".repeat(200_000) },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(body.label).toBe("probe: large");
+    expect(body.details).toEqual({
+      truncated: true,
+      original_bytes: expect.any(Number),
+    });
+    expect(body.details.original_bytes).toBeGreaterThan(100_000);
+    expect(String(vi.mocked(fetch).mock.calls[0][1]?.body).length).toBeLessThan(100_000);
+  });
+
   it("does not propagate synchronous client-log relay failures", () => {
     vi.mocked(fetch).mockImplementationOnce(() => {
       throw new Error("client-log relay unavailable");

@@ -2,6 +2,10 @@ import axios from "axios";
 import { createAsyncJobAdapter } from "./asyncJobAdapter";
 import { createRequestRetryAdapter } from "./requestRetryAdapter";
 import { postClientLog, summarizeErrorForLog } from "../utils/clientLog";
+import {
+  isLocalLuminaAppOrigin,
+  isLocalOnlyApiPath,
+} from "../utils/localAppOrigin";
 import { useActionHistoryStore } from "../stores/actionHistoryStore";
 import { useErrorTicketPromptStore } from "../stores/errorTicketPromptStore";
 import { tRuntime } from "../i18n/runtime";
@@ -727,11 +731,28 @@ export async function assertResourceDownloadAvailable(
   }
 }
 
+const LOCAL_APP_ONLY_DETAIL =
+  "This endpoint is only available from the local Lumina Studio app.";
+
 apiClient.interceptors.request.use((config) => {
   if (config.data instanceof FormData && !config.url?.includes("/feedback/")) {
     for (const value of config.data.values()) {
       if (typeof File !== "undefined" && value instanceof File) rememberFeedbackSource(value);
     }
+  }
+  if (
+    !isLocalLuminaAppOrigin() &&
+    isLocalOnlyApiPath(config.url, config.baseURL ?? apiClient.defaults.baseURL)
+  ) {
+    config.suppressClientLog = true;
+    config.suppressErrorTicket = true;
+    return Promise.reject(
+      new axios.AxiosError(
+        LOCAL_APP_ONLY_DETAIL,
+        "ERR_LOCAL_APP_ONLY",
+        config,
+      ),
+    );
   }
   return config;
 });
@@ -760,7 +781,11 @@ apiClient.interceptors.response.use(
       response?.data,
       statusCode,
     );
-    if (!suppressClientLog) {
+    const localOnlyForbidden =
+      statusCode === 403 &&
+      !isLocalLuminaAppOrigin() &&
+      isLocalOnlyApiPath(typeof url === "string" ? url : null, config?.baseURL ?? apiClient.defaults.baseURL);
+    if (!suppressClientLog && !localOnlyForbidden) {
       recordApiFailure({
         method,
         url,

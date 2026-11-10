@@ -10,6 +10,20 @@ vi.mock("../../api/system", () => ({
   }),
 }));
 
+const { isLocalLuminaAppOriginMock } = vi.hoisted(() => ({
+  isLocalLuminaAppOriginMock: vi.fn(() => true),
+}));
+
+vi.mock("../../utils/localAppOrigin", async () => {
+  const actual = await vi.importActual<typeof import("../../utils/localAppOrigin")>(
+    "../../utils/localAppOrigin",
+  );
+  return {
+    ...actual,
+    isLocalLuminaAppOrigin: isLocalLuminaAppOriginMock,
+  };
+});
+
 vi.mock("../../stores/generatedArtifactInvalidation", () => ({
   invalidateGeneratedArtifacts: vi.fn(),
   registerGeneratedArtifactInvalidator: vi.fn(),
@@ -87,6 +101,7 @@ describe("useSharedSettingsPersistence", () => {
     vi.clearAllMocks();
     vi.resetModules();
     localStorage.clear();
+    isLocalLuminaAppOriginMock.mockReturnValue(true);
   });
 
   it("hydrates once, then persists later changes from a changing port origin", async () => {
@@ -144,6 +159,24 @@ describe("useSharedSettingsPersistence", () => {
         expect.objectContaining({ language: "zh", theme: "light" }),
       );
     });
+    unmount();
+  });
+
+  it("skips backend settings sync on a public origin", async () => {
+    isLocalLuminaAppOriginMock.mockReturnValue(false);
+    const systemApi = await import("../../api/system");
+    vi.mocked(systemApi.getSettings).mockResolvedValue({
+      status: "success",
+      settings: SHARED_SETTINGS,
+    });
+    const { useSharedSettingsPersistence } = await import("../useSharedSettingsPersistence");
+    const { useSettingsStore } = await import("../../stores/settingsStore");
+    const { unmount } = renderHook(() => useSharedSettingsPersistence());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(systemApi.getSettings).not.toHaveBeenCalled();
+    act(() => useSettingsStore.getState().setTheme("dark"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(systemApi.saveSettings).not.toHaveBeenCalled();
     unmount();
   });
 });

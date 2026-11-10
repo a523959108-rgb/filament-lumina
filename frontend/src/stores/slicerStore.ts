@@ -11,6 +11,7 @@ import {
   getDetectedSlicerIdForSoftware,
   getSoftwareIdForDetectedSlicerId,
 } from "../utils/settingsOptionIds";
+import { isLocalLuminaAppOrigin } from "../utils/localAppOrigin";
 
 function isApiFilesUrl(value: string): boolean {
   return value.trim().startsWith("/api/files/");
@@ -120,6 +121,10 @@ export const useSlicerStore = create<SlicerState & SlicerActions>(
     ...DEFAULT_STATE,
 
     detectSlicers: async () => {
+      if (!isLocalLuminaAppOrigin()) {
+        set({ isDetecting: false, slicers: [], error: null });
+        return;
+      }
       set({ isDetecting: true, error: null });
       try {
         const response = await apiDetectSlicers();

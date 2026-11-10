@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getSettings } from "../api/system";
 import { useSettingsStore } from "../stores/settingsStore";
+import { isLocalLuminaAppOrigin } from "../utils/localAppOrigin";
 
 const SETTINGS_SYNC_DEBOUNCE_MS = 150;
 
@@ -30,6 +31,12 @@ export function useSharedSettingsPersistence(): void {
         }, SETTINGS_SYNC_DEBOUNCE_MS);
       });
     };
+
+    if (!isLocalLuminaAppOrigin()) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     void getSettings({ suppressClientLog: true })
       .then(async (response) => {

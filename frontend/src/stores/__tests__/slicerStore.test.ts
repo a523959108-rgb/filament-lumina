@@ -1,4 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+const { isLocalLuminaAppOriginMock } = vi.hoisted(() => ({
+  isLocalLuminaAppOriginMock: vi.fn(() => true),
+}));
+
+vi.mock("../../utils/localAppOrigin", () => ({
+  isLocalLuminaAppOrigin: isLocalLuminaAppOriginMock,
+}));
+
 import { mergeCustomSlicer, useSlicerStore } from "../slicerStore";
 import type { SlicerInfo } from "../../api/types";
 import { DEFAULT_SETTINGS, useSettingsStore } from "../settingsStore";
@@ -50,6 +59,7 @@ describe("detectSlicers", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    isLocalLuminaAppOriginMock.mockReturnValue(true);
     useSettingsStore.setState({ ...DEFAULT_SETTINGS });
   });
 
@@ -61,6 +71,19 @@ describe("detectSlicers", () => {
     const state = useSlicerStore.getState();
     expect(state.slicers).toEqual(MOCK_SLICERS);
     expect(state.selectedSlicerId).toBe("bambu_studio");
+    expect(state.isDetecting).toBe(false);
+    expect(state.error).toBeNull();
+  });
+
+  it("公网来源时不调用检测接口、也不报错", async () => {
+    isLocalLuminaAppOriginMock.mockReturnValue(false);
+    mockDetect.mockResolvedValue({ slicers: MOCK_SLICERS });
+
+    await useSlicerStore.getState().detectSlicers();
+
+    const state = useSlicerStore.getState();
+    expect(mockDetect).not.toHaveBeenCalled();
+    expect(state.slicers).toEqual([]);
     expect(state.isDetecting).toBe(false);
     expect(state.error).toBeNull();
   });

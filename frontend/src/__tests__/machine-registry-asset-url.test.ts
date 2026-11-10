@@ -1,11 +1,29 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import apiClient from "../api/client";
 import { getMachineRegistryAssetUrl } from "../api/system";
 import * as systemApiModule from "../api/system";
 
+const { isLocalLuminaAppOriginMock } = vi.hoisted(() => ({
+  isLocalLuminaAppOriginMock: vi.fn(() => true),
+}));
+
+vi.mock("../utils/localAppOrigin", async () => {
+  const actual = await vi.importActual<typeof import("../utils/localAppOrigin")>(
+    "../utils/localAppOrigin",
+  );
+  return {
+    ...actual,
+    isLocalLuminaAppOrigin: isLocalLuminaAppOriginMock,
+  };
+});
+
 const originalBaseUrl = apiClient.defaults.baseURL;
 
 describe("machine registry asset URL", () => {
+  beforeEach(() => {
+    isLocalLuminaAppOriginMock.mockReturnValue(true);
+  });
+
   afterEach(() => {
     apiClient.defaults.baseURL = originalBaseUrl;
   });
@@ -51,5 +69,20 @@ describe("machine registry asset URL", () => {
       "/api/system/machine-registry/bed-model?device_profile_id=" +
         "OrcaSlicer%3Abbl%3Abambu-lab-a1-mini%3A0.4",
     );
+  });
+
+  it("does not request the native bed model on a public origin", () => {
+    isLocalLuminaAppOriginMock.mockReturnValue(false);
+    apiClient.defaults.baseURL = "/api";
+    const getMachineBedModelUrl = (
+      systemApiModule as unknown as {
+        getMachineBedModelUrl?: (deviceProfileId: string) => string;
+      }
+    ).getMachineBedModelUrl;
+    expect(getMachineBedModelUrl).toBeTypeOf("function");
+    if (!getMachineBedModelUrl) return;
+    expect(
+      getMachineBedModelUrl("OrcaSlicer:bbl:bambu-lab-a1-mini:0.4"),
+    ).toBe("");
   });
 });

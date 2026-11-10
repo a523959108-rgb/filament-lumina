@@ -28,6 +28,7 @@ export interface ClientLogEntry {
 
 const CLIENT_LOG_EXPORT_LIMIT = Number.POSITIVE_INFINITY;
 const CLIENT_LOG_RELAY_FAILURE_BACKOFF_MS = 10_000;
+const CLIENT_LOG_MAX_RELAY_BYTES = 100_000;
 
 /**
  * Session-storage key backing the optional persistence layer for the
@@ -508,11 +509,20 @@ export function postClientLog(
     payload.details = entry.details;
   }
 
+  let body = JSON.stringify(payload);
+  if (body.length > CLIENT_LOG_MAX_RELAY_BYTES) {
+    payload.details = {
+      truncated: true,
+      original_bytes: body.length,
+    };
+    body = JSON.stringify(payload);
+  }
+
   try {
     const maybePromise = fetch("/api/client-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body,
     });
     if (
       maybePromise &&

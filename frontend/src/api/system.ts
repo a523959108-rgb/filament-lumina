@@ -1,5 +1,6 @@
 import type { AxiosProgressEvent } from "axios";
 import apiClient, { type ApiRequestOptions } from "./client";
+import { isLocalLuminaAppOrigin } from "../utils/localAppOrigin";
 import type {
   ClearCacheResponse,
   UserSettings,
@@ -63,6 +64,10 @@ export function getMachineRegistryAssetUrl(path: string | null | undefined): str
 export function getMachineBedModelUrl(deviceProfileId: string): string {
   const trimmed = deviceProfileId.trim();
   if (!trimmed) return "";
+  // Native bed models are served only to the local app. Skip the request on
+  // a public origin so the 3D preview falls back to a generic plate.
+  // 热床模型接口仅限本地应用；公网部署跳过请求，三维预览改用通用底板。
+  if (!isLocalLuminaAppOrigin()) return "";
   const baseURL = apiClient.defaults.baseURL?.trim() || "/api";
   const normalizedBaseURL = baseURL.replace(/\/+$/, "");
   return (
