@@ -20,10 +20,13 @@ import cv2
 import numpy as np
 import trimesh
 from shapely.affinity import translate
+from shapely.geometry.base import BaseGeometry
 
 from config import PrinterConfig
+from core.print_layers import resolve_coating_height_mm, resolve_layer_height_mm
 from core.geometry_utils import create_keychain_loop
 from core.layered_meshing import build_labeled_surface_mesh
+from core.mesh_generators import rasterize_boundary_geometry
 from core.mesh_export_parts import (
     copy_mesh_export_part_ranges,
     set_concatenated_mesh_export_part_ranges,
@@ -100,6 +103,8 @@ def _generate_outline_mesh(
     outline_width_mm: float,
     outline_thickness_mm: float,
     target_h: int,
+    *,
+    layer_height_mm: float = PrinterConfig.LAYER_HEIGHT,
 ) -> trimesh.Trimesh | None:
     """Generate a ring-shaped outline mesh around the outer contour of the model.
     生成模型外轮廓的环形描边网格。
@@ -124,7 +129,7 @@ def _generate_outline_mesh(
     outline_width_px = max(1, int(round(outline_width_mm / pixel_scale)))
 
     # Convert thickness from mm to layers
-    outline_layers = max(1, int(round(outline_thickness_mm / PrinterConfig.LAYER_HEIGHT)))
+    outline_layers = max(1, int(round(outline_thickness_mm / layer_height_mm)))
 
     _log.debug(
         f"Width: {outline_width_mm}mm = {outline_width_px}px, "
@@ -172,7 +177,7 @@ def _generate_outline_mesh(
     transform = np.eye(4)
     transform[0, 0] = float(pixel_scale)
     transform[1, 1] = float(pixel_scale)
-    transform[2, 2] = float(PrinterConfig.LAYER_HEIGHT)
+    transform[2, 2] = layer_height_mm
     transform[0, 3] = -float(pad) * float(pixel_scale)
     transform[1, 3] = -float(pad) * float(pixel_scale)
     mesh.apply_transform(transform)
@@ -214,6 +219,77 @@ def _generate_boundary_fill_mesh(
     )
     if mesh is not None and pad_pixels > 0:
         mesh.apply_translation([-float(pad_pixels), -float(pad_pixels), 0.0])
+    return mesh
+
+
+def _generate_face_up_coating_mesh(
+    full_matrix: np.ndarray,
+    z_edges: np.ndarray | None,
+    mask_solid: np.ndarray,
+    total_layers: int,
+    pixel_scale: float,
+    *,
+    layer_height_mm: float,
+    coating_height_mm: float,
+    outline_width_px: int,
+    boundary_geometry: BaseGeometry | None,
+    boundary_outline_geometry: BaseGeometry | None,
+) -> trimesh.Trimesh | None:
+    """Cover the highest occupied layer of each column with one coating thickness."""
+    roof = np.zeros(mask_solid.shape, dtype=np.int32)
+    layer_tops = range(1, len(full_matrix) + 1) if z_edges is None else z_edges[1:]
+    for top, plane in zip(layer_tops, full_matrix, strict=True):
+        np.copyto(roof, top, where=plane != -1)
+
+    pad = 0
+    if boundary_geometry is not None:
+        body_mask = rasterize_boundary_geometry(
+            boundary_geometry, height_px=roof.shape[0], width_px=roof.shape[1],
+        )
+        roof[~body_mask] = 0
+        if boundary_outline_geometry is not None:
+            pad = outline_width_px + 1
+            roof = np.pad(roof, pad)
+            outline_mask = rasterize_boundary_geometry(
+                translate(boundary_outline_geometry, xoff=pad, yoff=pad),
+                height_px=roof.shape[0],
+                width_px=roof.shape[1],
+            )
+            roof[outline_mask] = total_layers
+    else:
+        roof[~mask_solid] = 0
+        if outline_width_px > 0:
+            dilated_mask, pad = _dilate_mask_with_outline_padding(mask_solid, outline_width_px)
+            roof = np.pad(roof, pad)
+            roof[dilated_mask & ~np.pad(mask_solid, pad)] = total_layers
+
+    # Keep the main stack on its own lattice. Coincident transitions must
+    # collapse even when float multiplication and addition differ by a ULP.
+    roof_mm = np.round(roof * layer_height_mm, 12)
+    coat_end_mm = np.round(roof_mm + coating_height_mm, 12)
+    coat_end_mm[roof == 0] = 0
+    roof_tops = np.unique(roof_mm)
+    roof_tops = roof_tops[roof_tops > 0]
+    if len(roof_tops) == 0:
+        return None
+    # Widely separated relief faces share a compact schedule. Empty spans
+    # take one plane rather than allocating a mask for every physical layer.
+    transitions = np.union1d(roof_tops, np.round(roof_tops + coating_height_mm, 12))
+    coating = np.empty((len(transitions) - 1, *roof.shape), dtype=bool)
+    for bottom_mm, plane in zip(transitions[:-1], coating, strict=True):
+        np.logical_and(roof_mm <= bottom_mm, bottom_mm < coat_end_mm, out=plane)
+    mesh = build_labeled_surface_mesh(
+        coating,
+        material_id=True,
+        height_px=roof.shape[0],
+    )
+    if mesh is not None:
+        # The mesher builds walls in interval-index space, with integer or
+        # half-integer vertices. Map those vertices to the physical schedule.
+        mesh.vertices[:, 2] = np.interp(mesh.vertices[:, 2], np.arange(len(transitions)), transitions)
+        transform = np.diag([pixel_scale, pixel_scale, 1.0, 1.0])
+        transform[:2, 3] = (-pad * pixel_scale, -pad * pixel_scale)
+        mesh.apply_transform(transform)
     return mesh
 
 
@@ -363,6 +439,7 @@ def run(ctx: dict) -> dict:
     target_h = ctx["target_h"]
     target_w = ctx.get("target_w", mask_solid.shape[1])
     pixel_scale = ctx["pixel_scale"]
+    layer_height_mm = resolve_layer_height_mm(ctx)
     total_layers = ctx["total_layers"]
     preview_colors = ctx["preview_colors"]
     transform = ctx["transform"]
@@ -375,7 +452,6 @@ def run(ctx: dict) -> dict:
     enable_cloisonne = ctx.get("enable_cloisonne", False)
     backing_metadata = ctx["backing_metadata"]
     enable_coating = ctx.get("enable_coating", False)
-    coating_height_mm = ctx.get("coating_height_mm", 0.08)
     enable_outline = ctx.get("enable_outline", False)
     outline_width = ctx.get("outline_width", 2.0)
     structure_mode_text = str(ctx.get("structure_mode", "") or "")
@@ -386,12 +462,10 @@ def run(ctx: dict) -> dict:
     boundary_geometry = ctx.get("boundary_geometry")
     boundary_coating_geometry = boundary_geometry
     boundary_outline_geometry = None
+    boundary_outline_width_px = 0
     boundary_pad_pixels = 0
     if boundary_geometry is not None and enable_outline:
-        boundary_outline_width_px = max(
-            1,
-            int(round(outline_width / max(pixel_scale, 1e-9))),
-        )
+        boundary_outline_width_px = max(1, int(round(outline_width / max(pixel_scale, 1e-9))))
         boundary_coating_geometry = boundary_geometry.buffer(
             float(boundary_outline_width_px)
         )
@@ -537,7 +611,7 @@ def run(ctx: dict) -> dict:
         )
         loop_preview_color_added = False
         try:
-            loop_thickness = total_layers * PrinterConfig.LAYER_HEIGHT
+            loop_thickness = total_layers * layer_height_mm
             loop_mesh = create_keychain_loop(
                 width_mm=loop_info["width_mm"],
                 length_mm=loop_info["length_mm"],
@@ -583,16 +657,33 @@ def run(ctx: dict) -> dict:
     if enable_coating:
         _s08_t_coating = time.perf_counter()
         try:
-            coating_layers = max(1, int(round(coating_height_mm / PrinterConfig.LAYER_HEIGHT)))
-            _log.debug(f"Generating coating: height={coating_height_mm}mm ({coating_layers} layers), bottom side")
+            coating_height_mm = resolve_coating_height_mm(ctx.get("coating_height_mm"))
+            face_orientation = ctx.get("bambu_face_orientation") or ("double" if is_double_sided else "down")
+            coat_face_up = face_orientation == "up"
             coating_pad_px = 0
-            if boundary_geometry is not None:
+            if coat_face_up:
+                outline_width_px = boundary_outline_width_px
+                if boundary_geometry is None and enable_outline:
+                    outline_width_px = max(1, int(round(outline_width / pixel_scale)))
+                coating_mesh = _generate_face_up_coating_mesh(
+                    full_matrix,
+                    ctx.get("voxel_z_edges"),
+                    mask_solid,
+                    total_layers,
+                    pixel_scale,
+                    layer_height_mm=layer_height_mm,
+                    coating_height_mm=coating_height_mm,
+                    outline_width_px=outline_width_px,
+                    boundary_geometry=boundary_geometry,
+                    boundary_outline_geometry=boundary_outline_geometry,
+                )
+            elif boundary_geometry is not None:
                 coating_mesh = _generate_boundary_fill_mesh(
                     mesher=mesher,
                     boundary_geometry=boundary_coating_geometry,
                     target_h=target_h,
                     target_w=target_w,
-                    num_layers=coating_layers,
+                    num_layers=1,
                     pad_pixels=boundary_pad_pixels,
                 )
             else:
@@ -608,32 +699,22 @@ def run(ctx: dict) -> dict:
                         outline_width_px,
                     )
 
-                # Build a small voxel matrix for the coating
-                coating_matrix = np.full(
-                    (coating_layers, *coating_mask.shape),
-                    -1,
-                    dtype=int,
-                )
-                coating_slice = np.where(coating_mask, 0, -1).astype(int)
-                coating_matrix[:] = coating_slice[np.newaxis, :, :]
-
+                # One logical slab with its own physical thickness.
+                coating_matrix = np.where(coating_mask[np.newaxis], 0, -1)
                 coating_mesh = mesher.generate_mesh(
                     coating_matrix,
                     0,
                     coating_mask.shape[0],
                 )
             if coating_mesh and len(coating_mesh.vertices) > 0:
-                # Transform XY same as model, Z same layer height
-                coat_transform = np.eye(4)
-                coat_transform[0, 0] = pixel_scale
-                coat_transform[1, 1] = pixel_scale
-                coat_transform[2, 2] = PrinterConfig.LAYER_HEIGHT
-                coat_transform[0, 3] = -coating_pad_px * pixel_scale
-                coat_transform[1, 3] = -coating_pad_px * pixel_scale
-                # Shift down so coating sits below the model (Z < 0)
-                coat_transform[2, 3] = -coating_layers * PrinterConfig.LAYER_HEIGHT
-                coating_mesh.apply_transform(coat_transform)
-                if is_double_sided:
+                if not coat_face_up:
+                    coat_transform = np.diag([pixel_scale, pixel_scale, coating_height_mm, 1.0])
+                    coat_transform[:3, 3] = (
+                        -coating_pad_px * pixel_scale, -coating_pad_px * pixel_scale,
+                        -coating_height_mm,
+                    )
+                    coating_mesh.apply_transform(coat_transform)
+                if face_orientation == "double":
                     top_coating_mesh = coating_mesh.copy()
                     copy_mesh_export_part_ranges(
                         coating_mesh,
@@ -643,7 +724,7 @@ def run(ctx: dict) -> dict:
                         [
                             0.0,
                             0.0,
-                            (total_layers + coating_layers) * PrinterConfig.LAYER_HEIGHT,
+                            total_layers * layer_height_mm + coating_height_mm,
                         ]
                     )
                     coating_sources = [coating_mesh, top_coating_mesh]
@@ -659,7 +740,7 @@ def run(ctx: dict) -> dict:
                 coating_mesh.metadata["bambu_material_name"] = coating_material.name
                 scene.add_geometry(coating_mesh, node_name=coating_name, geom_name=coating_name)
                 valid_slot_names.append(coating_name)
-                _log.debug(f"Coating added as standalone '{coating_name}' ({coating_layers} layers)")
+                _log.debug("Coating added as standalone %s (%.3f mm)", coating_name, coating_height_mm)
             else:
                 _log.warning("Coating mesh empty, skipping")
         except S08_HANDLED_ERRORS as e:
@@ -670,23 +751,20 @@ def run(ctx: dict) -> dict:
     if enable_outline:
         _s08_t_outline = time.perf_counter()
         try:
-            outline_thickness_mm = total_layers * PrinterConfig.LAYER_HEIGHT
-            outline_z_offset = 0.0
-            # Coating owns the negative-Z interval; the outline starts at its
-            # upper surface, so different materials never occupy that volume.
+            outline_thickness_mm = total_layers * layer_height_mm
+            # The outline owns the body's Z span, between any exterior coats.
 
             _log.debug(
                 f"Generating outline: width={outline_width}mm, "
-                f"thickness={outline_thickness_mm}mm (z_offset={outline_z_offset}mm)"
+                f"thickness={outline_thickness_mm}mm"
             )
             if boundary_geometry is not None:
-                outline_layers = max(1, int(round(outline_thickness_mm / PrinterConfig.LAYER_HEIGHT)))
                 outline_mesh = _generate_boundary_fill_mesh(
                     mesher=mesher,
                     boundary_geometry=boundary_outline_geometry,
                     target_h=target_h,
                     target_w=target_w,
-                    num_layers=outline_layers,
+                    num_layers=total_layers,
                     pad_pixels=boundary_pad_pixels,
                 )
             else:
@@ -696,6 +774,7 @@ def run(ctx: dict) -> dict:
                     outline_width_mm=outline_width,
                     outline_thickness_mm=outline_thickness_mm,
                     target_h=target_h,
+                    layer_height_mm=layer_height_mm,
                 )
 
             if outline_mesh is not None:
@@ -703,11 +782,8 @@ def run(ctx: dict) -> dict:
                     outline_transform = np.eye(4)
                     outline_transform[0, 0] = pixel_scale
                     outline_transform[1, 1] = pixel_scale
-                    outline_transform[2, 2] = PrinterConfig.LAYER_HEIGHT
+                    outline_transform[2, 2] = layer_height_mm
                     outline_mesh.apply_transform(outline_transform)
-                # Shift outline down if coating is enabled
-                if outline_z_offset != 0.0:
-                    outline_mesh.vertices[:, 2] += outline_z_offset
                 outline_name = "Outline"
                 outline_mesh.visual.face_colors = base_aux_color
                 outline_mesh.metadata["name"] = outline_name

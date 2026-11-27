@@ -140,6 +140,8 @@ function formatValidationDetails(details: unknown[]): string | null {
 }
 
 const STRUCTURED_DETAIL_TRANSLATION_KEYS: ReadonlyMap<string, string> = new Map([
+  ["material_archive_unavailable", "api_error_material_archive_unavailable"],
+  ["template_material_mapping", "api_error_template_material_mapping"],
   ["vector_native_requires_svg", "api_error_vector_native_requires_svg"],
   ["source_image_unreadable", "api_error_source_image_unreadable"],
   ["source_image_too_large", "api_error_source_image_too_large"],
@@ -164,11 +166,38 @@ const STRUCTURED_DETAIL_TRANSLATION_KEYS: ReadonlyMap<string, string> = new Map(
     "api_error_model_surface_insufficient_thickness",
   ],
   ["model_surface_boolean_failed", "api_error_model_surface_boolean_failed"],
+  ["model_surface_artwork_no_overlap", "api_error_model_surface_artwork_no_overlap"],
+  ["The contribution server URL is invalid.", "community_err_invalid_url"],
+  ["The material server returned invalid device credentials.", "community_err_invalid_credentials"],
+  ["The contribution server has not been configured.", "community_err_unconfigured"],
+  ["The revision archive exceeds the contribution limit.", "community_err_archive_too_large"],
+  ["The material server could not be reached. Please retry.", "community_err_unreachable"],
+  ["Reconnect your material account and try again.", "community_err_reconnect"],
+  ["This material server needs the Studio community update.", "community_err_server_outdated"],
+  ["The material server could not complete the request.", "community_err_request_failed"],
+  ["The contribution server returned an invalid response.", "community_err_invalid_response"],
+  ["Connect your existing material account first.", "community_err_connect_first"],
+  ["Connect your community account.", "community_err_connect_first"],
+  ["Open the contribution dialog in Lumina Studio.", "community_err_local_access"],
+  ["Reconnect the original contribution account and reopen the form.", "community_err_wrong_account_form"],
+  ["This revision does not belong to the connected account.", "community_err_not_owner"],
+  ["The public activity snapshot could not be loaded.", "community_err_snapshot_failed"],
+  ["Account activity could not be loaded.", "community_err_activity_failed"],
+  ["The connected account changed. Try again.", "community_err_account_changed"],
+  ["The connected account changed. Reopen the report.", "community_err_account_changed_report"],
+  ["The connected account changed. Reopen the form and confirm attribution.", "community_err_account_changed_form"],
+  ["Revise the submission before sending it for review again.", "community_err_revise_first"],
 ]);
+
+function translateKnownDetail(value: string): string {
+  const trimmed = value.trim();
+  const key = STRUCTURED_DETAIL_TRANSLATION_KEYS.get(trimmed);
+  return key ? tRuntime(key) : trimmed;
+}
 
 function extractReadableDetail(data: unknown): string | null {
   if (typeof data === "string" && data.trim()) {
-    return data.trim();
+    return translateKnownDetail(data);
   }
   if (!isRecord(data)) {
     return null;
@@ -176,7 +205,7 @@ function extractReadableDetail(data: unknown): string | null {
 
   const detail = data.detail;
   if (typeof detail === "string" && detail.trim()) {
-    return detail.trim();
+    return translateKnownDetail(detail);
   }
   if (Array.isArray(detail)) {
     const validationMessage = formatValidationDetails(detail);
@@ -188,6 +217,18 @@ function extractReadableDetail(data: unknown): string | null {
   if (isRecord(detail)) {
     const detailCode =
       typeof detail.error === "string" ? detail.error : detail.code;
+    if (
+      detailCode === "template_slot_capacity" &&
+      typeof detail.required_slots === "number" &&
+      Number.isInteger(detail.required_slots) && detail.required_slots > 0 &&
+      typeof detail.available_slots === "number" &&
+      Number.isInteger(detail.available_slots) && detail.available_slots >= 0
+    ) {
+      return tRuntime("api_error_template_slot_capacity", {
+        requiredSlots: detail.required_slots,
+        availableSlots: detail.available_slots,
+      });
+    }
     if (typeof detailCode === "string") {
       const translationKey = STRUCTURED_DETAIL_TRANSLATION_KEYS.get(detailCode);
       if (translationKey) {

@@ -9,13 +9,38 @@ import {
 
 import {
   workshopApi,
+  workshopBackendFailure as workshopRequestFailure,
+  workshopBackendApi,
+  type ArchiveProgressListener,
   type InstalledWorkshopModule,
   type InstalledWorkshopVersion,
+  type WorkshopArchiveInstallProgress,
+  type WorkshopBackendApi,
+  type WorkshopBackendProgress,
+  type WorkshopBackendStatus,
   type WorkshopCatalog,
   type WorkshopCatalogModule,
   type WorkshopCatalogVersion,
+  type WorkshopDownloadPreferences,
+  type WorkshopPermission,
   type WorkshopManagerApi,
+  type WorkshopMutation,
+  type WorkshopUninstallReport,
 } from "../api/workshop";
+import {
+  BackendSetupError,
+  authorizeAndPrepare,
+  backendNeedsSetup,
+} from "./backend/backendSetup";
+import {
+  BackendSetupDialog,
+  type BackendSetupPhase,
+} from "./backend/BackendSetupDialog";
+import { backendActionErrorKey } from "./backend/backendErrors";
+import { BackendStatusRow } from "./backend/BackendStatusRow";
+import { StorageOverview } from "./backend/StorageOverview";
+import { UninstallReportDialog } from "./backend/UninstallReportDialog";
+import { DownloadProgressDetails } from "./DownloadProgressDetails";
 import Button from "../components/ui/Button";
 import { retainWorkshopProject } from "../project/workshopRuntime";
 import CloseButton from "../components/ui/CloseButton";
@@ -31,6 +56,7 @@ import { useWorkspaceMode } from "../hooks/useWorkspaceMode";
 import { useI18n } from "../i18n/context";
 import { useSettingsStore } from "../stores/settingsStore";
 import ModuleDetails from "./ModuleDetails";
+import { MaterialImportDialog } from "./MaterialImportDialog";
 import {
   createWorkshopProjectStorage,
   type ManagedWorkshopProjectStorage,
@@ -51,11 +77,17 @@ import {
   createSyntheticWorkshopHandlers,
   createWorkshopManagerHandlers,
   createWorkshopUiState,
+  type WorkshopMaterialImportConfirmation,
 } from "./runtime/handlers";
 import {
   type WorkshopAuditStatus,
   useWorkshopStore,
 } from "./store";
+
+interface MaterialImportPrompt {
+  request: WorkshopMaterialImportConfirmation;
+  finish(confirmed: boolean): void;
+}
 
 interface PermissionPrompt {
   kind: "staged" | "update";
@@ -66,6 +98,45 @@ interface PermissionPrompt {
 interface UninstallPrompt {
   module: InstalledWorkshopModule;
   deleteProjects: boolean;
+  deleteTaskData: boolean;
+  retainModels: boolean;
+}
+
+interface BackendSetupState {
+  module: InstalledWorkshopModule;
+  version: string;
+  status: WorkshopBackendStatus;
+  phase: BackendSetupPhase;
+  progress: WorkshopBackendProgress | null;
+  failureCode: string | null;
+  failureDetail?: string | null;
+  taskId: string | null;
+  /** Translation key of a cancel request that did not go through. */
+  cancelErrorKey?: string | null;
+  cancelling?: boolean;
+  proceed(): void;
+}
+
+interface BackendSetupAttempt {
+  taskId: string | null;
+  cancelRequested: boolean;
+  cancelRequest: Promise<void> | null;
+}
+
+function moduleHasBackend(module: InstalledWorkshopModule): boolean {
+  return module.version_details.some((detail) => Boolean(detail.backend));
+}
+
+function moduleDisplayName(
+  module: InstalledWorkshopModule,
+  version: string,
+  language: "zh" | "en",
+): string {
+  const detail = module.version_details.find((item) => item.version === version);
+  if (detail === undefined) {
+    return module.module_id;
+  }
+  return language === "zh" ? detail.name.zh_cn : detail.name.en_us;
 }
 
 interface DesktopRuntimeInfo {
@@ -274,6 +345,8 @@ interface InstalledCardProps {
     | "browser-restricted"
     | "unsafe-development";
   busy: boolean;
+  backendApi: WorkshopBackendApi;
+  backendRefreshKey: number;
   onOpen(version: string): void;
   onOpenCandidate(): void;
   onDetails(url: string): void;
@@ -282,6 +355,7 @@ interface InstalledCardProps {
   onToggle(): void;
   onUninstall(): void;
   onRestore(): void;
+  onPrepareBackend(version: string, status: WorkshopBackendStatus): void;
 }
 
 function InstalledCard({
@@ -290,6 +364,8 @@ function InstalledCard({
   retained,
   runtimeMode,
   busy,
+  backendApi,
+  backendRefreshKey,
   onOpen,
   onOpenCandidate,
   onDetails,
@@ -298,6 +374,7 @@ function InstalledCard({
   onToggle,
   onUninstall,
   onRestore,
+  onPrepareBackend,
 }: InstalledCardProps) {
   const { t, lang } = useI18n();
   const detail =
@@ -340,6 +417,7 @@ function InstalledCard({
   const title = detail
     ? localized(detail.name, lang)
     : module.module_id;
+  const backendVersion = detail?.backend ? detail.version : null;
 
   return (
     <article
@@ -404,6 +482,15 @@ function InstalledCard({
           <StatusBanner tone="info" className="mt-3">
             {t("workshop.manager.officialUninstalled")}
           </StatusBanner>
+        ) : null}
+        {backendVersion !== null && !module.official_uninstalled ? (
+          <BackendStatusRow
+            moduleId={module.module_id}
+            version={backendVersion}
+            api={backendApi}
+            refreshKey={backendRefreshKey}
+            onPrepare={(status) => onPrepareBackend(backendVersion, status)}
+          />
         ) : null}
       </div>
 
@@ -495,6 +582,7 @@ function InstalledCard({
 
 export interface WorkshopPanelProps {
   api?: WorkshopManagerApi;
+  backendApi?: WorkshopBackendApi;
   projectStorage?: ManagedWorkshopProjectStorage;
   runtimeMode?:
     | "desktop-secure"
@@ -505,6 +593,7 @@ export interface WorkshopPanelProps {
 
 export function WorkshopPanel({
   api = workshopApi,
+  backendApi = workshopBackendApi,
   projectStorage = defaultProjectStorage(),
   runtimeMode: runtimeModeOverride,
   FrameComponent = WorkshopFrame,
@@ -558,6 +647,8 @@ export function WorkshopPanel({
   const [busyModuleId, setBusyModuleId] = useState<string | null>(
     null,
   );
+  const nextInstallId = useRef(0);
+  const [archiveInstalls, setArchiveInstalls] = useState<Array<WorkshopArchiveInstallProgress & { id: number }>>([]);
   const [detailsUrl, setDetailsUrl] = useState<string | null>(null);
   const [permissionPrompt, setPermissionPrompt] =
     useState<PermissionPrompt | null>(null);
@@ -566,8 +657,148 @@ export function WorkshopPanel({
   const [githubRepository, setGithubRepository] = useState("");
   const [githubVersion, setGithubVersion] = useState("");
   const [returningHome, setReturningHome] = useState(false);
+  const [backendSetup, setBackendSetup] = useState<BackendSetupState | null>(null);
+  const [backendRefreshKey, setBackendRefreshKey] = useState(0);
+  const [uninstallReport, setUninstallReport] =
+    useState<WorkshopUninstallReport | null>(null);
+  const [materialImportPrompt, setMaterialImportPrompt] =
+    useState<MaterialImportPrompt | null>(null);
+  const materialImportPromptRef = useRef<MaterialImportPrompt | null>(null);
+  const backendSetupAttempt = useRef<BackendSetupAttempt | null>(null);
   const returnHomeTimerRef = useRef<number | null>(null);
   const snapshotIds = useRef(new Map<string, string>());
+
+  /**
+   * Gate opening a backend version on consent and successful preparation.
+   * Frontend-only versions open immediately as before.
+   * 后端版本需先授权并准备成功才打开；纯前端版本行为不变。
+   */
+  const ensureBackendReady = useCallback(
+    async (
+      module: InstalledWorkshopModule,
+      version: string,
+      proceed: () => void,
+    ) => {
+      const detail = moduleVersion(module, version);
+      if (!detail?.backend) {
+        proceed();
+        return;
+      }
+      try {
+        const status = await backendApi.status(module.module_id, version);
+        if (!backendNeedsSetup(status)) {
+          proceed();
+          return;
+        }
+        setBackendSetup({
+          module,
+          version,
+          status,
+          phase: "review",
+          progress: null,
+          failureCode: null,
+          taskId: status.preparation_task_id,
+          proceed,
+        });
+      } catch {
+        setOperationError(t("workshop.manager.operationError"));
+      }
+    },
+    [backendApi, t],
+  );
+
+  const cancelPreparationTask = useCallback((moduleId: string, attempt: BackendSetupAttempt) => {
+    if (attempt.taskId === null || attempt.cancelRequest !== null) return;
+    attempt.cancelRequest = backendApi.cancel(moduleId, attempt.taskId).then(
+      () => undefined,
+      (error: unknown) => {
+        attempt.cancelRequested = false;
+        attempt.cancelRequest = null;
+        if (backendSetupAttempt.current === attempt) {
+          setBackendSetup((current) => current === null ? current : {
+            ...current, cancelling: false, cancelErrorKey: backendActionErrorKey(error),
+          });
+        }
+      },
+    );
+  }, [backendApi]);
+
+  const confirmBackendSetup = useCallback(
+    (acknowledgeUnreviewed: boolean, sources?: WorkshopDownloadPreferences) => {
+      const setup = backendSetup;
+      if (setup === null || setup.phase !== "review" || backendSetupAttempt.current !== null) return;
+      const attempt: BackendSetupAttempt = { taskId: setup.taskId, cancelRequested: false, cancelRequest: null };
+      backendSetupAttempt.current = attempt;
+      setBackendSetup({ ...setup, phase: "preparing" });
+      void authorizeAndPrepare(
+        backendApi,
+        setup.module.module_id,
+        setup.version,
+        acknowledgeUnreviewed,
+        {
+          sources,
+          isCancelled: () => attempt.cancelRequested,
+          onTask: (taskId) => {
+            attempt.taskId = taskId;
+            setBackendSetup((current) =>
+              current === null ? current : { ...current, taskId },
+            );
+            if (attempt.cancelRequested) cancelPreparationTask(setup.module.module_id, attempt);
+          },
+          onProgress: (task) =>
+            setBackendSetup((current) =>
+              current === null ? current : { ...current, progress: task.progress },
+            ),
+        },
+      )
+        .then(async () => {
+          await attempt.cancelRequest;
+          setBackendSetup(null);
+          setBackendRefreshKey((value) => value + 1);
+          if (!attempt.cancelRequested) setup.proceed();
+        })
+        .catch(async (error: unknown) => {
+          await attempt.cancelRequest;
+          setBackendRefreshKey((value) => value + 1);
+          if (attempt.cancelRequested) {
+            setBackendSetup(null);
+            return;
+          }
+          setBackendSetup((current) =>
+            current === null
+              ? current
+              : {
+                  ...current,
+                  phase: "failed",
+                  failureCode:
+                    error instanceof BackendSetupError ? error.code : "request-failed",
+                  failureDetail: error instanceof BackendSetupError ? error.detail : null,
+                },
+          );
+        })
+        .finally(() => {
+          if (backendSetupAttempt.current === attempt) backendSetupAttempt.current = null;
+        });
+    },
+    [backendApi, backendSetup, cancelPreparationTask],
+  );
+
+  const cancelBackendSetup = useCallback(() => {
+    const setup = backendSetup;
+    if (setup === null) {
+      return;
+    }
+    const attempt = backendSetupAttempt.current;
+    if (setup.phase === "preparing" && attempt !== null) {
+      attempt.cancelRequested = true;
+      setBackendSetup((current) => current === null ? current : {
+        ...current, cancelling: true, cancelErrorKey: null,
+      });
+      cancelPreparationTask(setup.module.module_id, attempt);
+      return;
+    }
+    setBackendSetup(null);
+  }, [backendSetup, cancelPreparationTask]);
 
   const handleReturnHome = useCallback(() => {
     if (returnHomeTimerRef.current !== null) return;
@@ -788,6 +1019,51 @@ export function WorkshopPanel({
     setActiveRuntimeContext,
   ]);
 
+  // Host dialog for `material.import`; Cancel, frame close, and request
+  // timeout all resolve false. 取消、关闭模块或请求超时都视为未确认。
+  const confirmMaterialImport = useCallback(
+    (request: WorkshopMaterialImportConfirmation, signal: AbortSignal) =>
+      new Promise<boolean>((resolve) => {
+        if (signal.aborted) {
+          resolve(false);
+          return;
+        }
+        materialImportPromptRef.current?.finish(false);
+        const prompt: MaterialImportPrompt = {
+          request,
+          finish: (confirmed) => {
+            signal.removeEventListener("abort", onAbort);
+            if (materialImportPromptRef.current === prompt) {
+              materialImportPromptRef.current = null;
+              setMaterialImportPrompt(null);
+            }
+            resolve(confirmed);
+          },
+        };
+        const onAbort = () => prompt.finish(false);
+        signal.addEventListener("abort", onAbort, { once: true });
+        materialImportPromptRef.current = prompt;
+        setMaterialImportPrompt(prompt);
+      }),
+    [],
+  );
+  useEffect(
+    () => () => materialImportPromptRef.current?.finish(false),
+    [],
+  );
+  const materialImportModule = materialImportPrompt
+    ? modules.find(
+        (module) =>
+          module.module_id === materialImportPrompt.request.identity.moduleId,
+      ) ?? null
+    : null;
+  const materialImportVersion = materialImportModule && materialImportPrompt
+    ? moduleVersion(
+        materialImportModule,
+        materialImportPrompt.request.identity.moduleVersion,
+      )
+    : null;
+
   const handlers = useMemo(
     () =>
       createWorkshopManagerHandlers({
@@ -798,8 +1074,10 @@ export function WorkshopPanel({
             : "en-US",
         theme: () => useSettingsStore.getState().theme,
         onDiagnostics: setDiagnostics,
+        backend: backendApi,
+        materialImport: { confirm: confirmMaterialImport },
       }),
-    [projectStorage, setDiagnostics],
+    [backendApi, confirmMaterialImport, projectStorage, setDiagnostics],
   );
   const syntheticHandlers = useMemo(
     () => createSyntheticWorkshopHandlers(),
@@ -835,8 +1113,17 @@ export function WorkshopPanel({
           applyMutation(result.module);
         }
         return result.module;
-      } catch {
-        setOperationError(t("workshop.manager.operationError"));
+      } catch (error: unknown) {
+        const { code, status } = workshopRequestFailure(error);
+        if (code === "registry-download-network-error" || code === "registry-download-failed") {
+          setOperationError(t(status === 504
+            ? "workshop.manager.downloadTimeout"
+            : "workshop.manager.downloadNetworkError"));
+        } else {
+          setOperationError(t(code === "registry-catalog-unavailable"
+            ? "workshop.manager.catalogUnavailable"
+            : "workshop.manager.operationError"));
+        }
         return null;
       } finally {
         setBusyModuleId(null);
@@ -845,42 +1132,8 @@ export function WorkshopPanel({
     [applyMutation, t],
   );
 
-  const installUpdate = useCallback(
-    async (
-      module: InstalledWorkshopModule,
-      version: WorkshopCatalogVersion,
-    ) => {
-      const installed = await runModuleMutation(
-        module.module_id,
-        () =>
-          api.installRegistry(module.module_id, version.version),
-      );
-      if (
-        installed?.candidate_version &&
-        canOpenModule(
-          installed,
-          runtimeMode,
-          catalogById.get(installed.module_id),
-          installed.candidate_version,
-        )
-      ) {
-        openModule(
-          installed.module_id,
-          installed.candidate_version,
-        );
-      }
-    },
-    [
-      api,
-      catalogById,
-      openModule,
-      runModuleMutation,
-      runtimeMode,
-    ],
-  );
-
   const requestStagedCandidate = useCallback(
-    (module: InstalledWorkshopModule) => {
+    (module: InstalledWorkshopModule, alreadyApproved: ReadonlyArray<WorkshopPermission["name"]> = []) => {
       const candidateVersion = module.candidate_version;
       if (
         candidateVersion === null ||
@@ -905,10 +1158,12 @@ export function WorkshopPanel({
         )?.permissions.map((permission) => permission.name) ?? [],
       );
       const added = candidate.permissions.filter(
-        (permission) => !currentPermissions.has(permission.name),
+        (permission) => !currentPermissions.has(permission.name) && !alreadyApproved.includes(permission.name),
       );
       const confirm = () =>
-        openModule(module.module_id, candidateVersion);
+        void ensureBackendReady(module, candidateVersion, () =>
+          openModule(module.module_id, candidateVersion),
+        );
       if (added.length > 0) {
         setPermissionPrompt({
           kind: "staged",
@@ -919,14 +1174,49 @@ export function WorkshopPanel({
       }
       confirm();
     },
-    [catalogById, openModule, runtimeMode, t],
+    [catalogById, ensureBackendReady, openModule, runtimeMode, t],
   );
+
+  const runArchiveInstall = useCallback(async (
+    moduleId: string,
+    install: (listener: ArchiveProgressListener) => Promise<WorkshopMutation>,
+  ) => {
+    const id = ++nextInstallId.current;
+    setArchiveInstalls((current) => [...current, { id, phase: "resolving" }]);
+    try {
+      return await runModuleMutation(moduleId, () => install((progress) => {
+        setArchiveInstalls((current) => current.map((item) => item.id === id ? { ...progress, id } : item));
+      }));
+    } finally {
+      setArchiveInstalls((current) => current.filter((item) => item.id !== id));
+    }
+  }, [runModuleMutation]);
+
+  const installUpdate = useCallback(async (
+    module: InstalledWorkshopModule,
+    version: WorkshopCatalogVersion,
+    alreadyApproved?: ReadonlyArray<WorkshopPermission["name"]>,
+  ) => {
+    const installed = await runArchiveInstall(
+      module.module_id,
+      (listener) => api.installRegistry(module.module_id, version.version, listener),
+    );
+    if (installed !== null) {
+      requestStagedCandidate(installed, alreadyApproved);
+    }
+  }, [api, requestStagedCandidate, runArchiveInstall]);
 
   const requestUpdate = useCallback(
     (
       module: InstalledWorkshopModule,
       version: WorkshopCatalogVersion,
     ) => {
+      // The signed v1 catalog carries default text. New packages can supply
+      // translated reasons in their verified, staged manifest.
+      if (version.workshop_api_min && (compareWorkshopSemver(version.workshop_api_min, "1.2.0") ?? -1) >= 0) {
+        void installUpdate(module, version);
+        return;
+      }
       const currentPermissions = new Set(
         moduleVersion(module, module.active_version)?.permissions.map(
           (permission) => permission.name,
@@ -940,7 +1230,7 @@ export function WorkshopPanel({
           kind: "update",
           added,
           confirm: () => {
-            void installUpdate(module, version);
+            void installUpdate(module, version, added.map((permission) => permission.name));
           },
         });
         return;
@@ -952,7 +1242,7 @@ export function WorkshopPanel({
 
   const openView = useCallback(
     (
-      next: "installed" | "discover" | "developer",
+      next: "installed" | "discover" | "developer" | "storage",
     ) => {
       setView(next);
       if (next === "discover") {
@@ -1029,12 +1319,23 @@ export function WorkshopPanel({
     if (uninstallPrompt === null) {
       return;
     }
-    const { module, deleteProjects } = uninstallPrompt;
+    const { module, deleteProjects, deleteTaskData, retainModels } =
+      uninstallPrompt;
     setUninstallPrompt(null);
-    const result = await runModuleMutation(
-      module.module_id,
-      () => api.uninstallModule(module.module_id, deleteProjects),
-    );
+    const result = await runModuleMutation(module.module_id, async () => {
+      if (!moduleHasBackend(module)) {
+        return api.uninstallModule(module.module_id, deleteProjects);
+      }
+      const response = await api.uninstallModule(
+        module.module_id,
+        deleteProjects,
+        { deleteTaskData, retainModels },
+      );
+      if (response.uninstall_report) {
+        setUninstallReport(response.uninstall_report);
+      }
+      return response;
+    });
     if (deleteProjects) {
       await projectStorage.deleteModuleProjects(module.module_id);
       setRetainedProjects((current) => {
@@ -1063,14 +1364,14 @@ export function WorkshopPanel({
         setOperationError(t("workshop.manager.localInvalid"));
         return;
       }
-      const result = await runModuleMutation("local-install", () =>
-        api.installLocal(file),
+      const result = await runArchiveInstall("local-install", (listener) =>
+        api.installLocal(file, listener),
       );
       if (result !== null) {
         requestStagedCandidate(result);
       }
     },
-    [api, requestStagedCandidate, runModuleMutation, t],
+    [api, requestStagedCandidate, runArchiveInstall, t],
   );
 
   const installGithub = useCallback(async () => {
@@ -1085,8 +1386,8 @@ export function WorkshopPanel({
       setOperationError(t("workshop.manager.githubInvalid"));
       return;
     }
-    const result = await runModuleMutation("github-install", () =>
-      api.installGithub(githubRepository, githubVersion),
+    const result = await runArchiveInstall("github-install", (listener) =>
+      api.installGithub(githubRepository, githubVersion, listener),
     );
     if (result !== null) {
       requestStagedCandidate(result);
@@ -1096,20 +1397,20 @@ export function WorkshopPanel({
     githubRepository,
     githubVersion,
     requestStagedCandidate,
-    runModuleMutation,
+    runArchiveInstall,
     t,
   ]);
 
   const installRegistry = useCallback(
     async (moduleId: string, version: string) => {
-      const result = await runModuleMutation(moduleId, () =>
-        api.installRegistry(moduleId, version),
+      const result = await runArchiveInstall(moduleId, (listener) =>
+        api.installRegistry(moduleId, version, listener),
       );
       if (result !== null) {
         requestStagedCandidate(result);
       }
     },
-    [api, requestStagedCandidate, runModuleMutation],
+    [api, requestStagedCandidate, runArchiveInstall],
   );
 
   const restoreOfficialSeed = useCallback(
@@ -1123,6 +1424,30 @@ export function WorkshopPanel({
     },
     [api, requestStagedCandidate, runModuleMutation],
   );
+
+  // Rendered outside the module frame in both the runtime and manager views.
+  const materialImportDialog = materialImportPrompt ? (
+    <MaterialImportDialog
+      request={materialImportPrompt.request}
+      moduleName={
+        materialImportModule
+          ? moduleDisplayName(
+              materialImportModule,
+              materialImportPrompt.request.identity.moduleVersion,
+              lang,
+            )
+          : materialImportPrompt.request.identity.moduleId
+      }
+      publisher={materialImportVersion?.publisher ?? null}
+      reviewLevel={
+        materialImportModule
+          ? t(`workshop.manager.source.${sourceKey(materialImportModule)}`)
+          : t("workshop.manager.source.unreviewed")
+      }
+      onConfirm={() => materialImportPrompt.finish(true)}
+      onCancel={() => materialImportPrompt.finish(false)}
+    />
+  ) : null;
 
   if (selectedModule && selectedVersion && activeModule) {
     return (
@@ -1172,9 +1497,11 @@ export function WorkshopPanel({
               previousVersion: selectedModule.previous_version,
               consecutiveStartFailures:
                 selectedModule.consecutive_start_failures,
+              hasBackend: Boolean(selectedVersion.backend),
               projectSnapshotProtocol: selectedVersion.project_snapshot_protocol,
               projectSnapshotSchemas: selectedVersion.project_snapshot_schemas,
             }}
+            onBackendPresence={(moduleId) => backendApi.presence(moduleId)}
             runtimeMode={frameRuntimeMode(runtimeMode)}
             handlers={handlers}
             uiState={uiState}
@@ -1194,6 +1521,7 @@ export function WorkshopPanel({
             }
           />
         </div>
+        {materialImportDialog}
       </div>
     );
   }
@@ -1216,7 +1544,7 @@ export function WorkshopPanel({
           aria-label={t("workshop.manager.navigation")}
           className="inline-flex w-fit rounded-2xl border border-[color:var(--surface-outline)] bg-[color:var(--surface-section-muted)] p-1"
         >
-          {(["installed", "discover", "developer"] as const).map(
+          {(["installed", "discover", "developer", "storage"] as const).map(
             (item) => (
               <button
                 key={item}
@@ -1251,6 +1579,17 @@ export function WorkshopPanel({
         {operationError ? (
           <StatusBanner tone="error">{operationError}</StatusBanner>
         ) : null}
+
+        {archiveInstalls.map((item) => (
+          <div className="px-3 py-2" key={item.id}>
+            <p role="status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              {t(`workshop.manager.archive.${item.phase}`)}
+            </p>
+            {item.download ? (
+              <DownloadProgressDetails download={item.download} uploading={item.phase === "uploading"} />
+            ) : null}
+          </div>
+        ))}
 
         {!loadingModules &&
         activeModule !== null &&
@@ -1293,7 +1632,9 @@ export function WorkshopPanel({
                   runtimeMode={runtimeMode}
                   busy={busyModuleId === module.module_id}
                   onOpen={(version) =>
-                    openModule(module.module_id, version)
+                    void ensureBackendReady(module, version, () =>
+                      openModule(module.module_id, version),
+                    )
                   }
                   onOpenCandidate={() =>
                     requestStagedCandidate(module)
@@ -1319,11 +1660,27 @@ export function WorkshopPanel({
                     setUninstallPrompt({
                       module,
                       deleteProjects: false,
+                      deleteTaskData: false,
+                      retainModels: false,
                     })
                   }
                   onRestore={() =>
                     void restoreOfficialSeed(module.module_id)
                   }
+                  backendApi={backendApi}
+                  backendRefreshKey={backendRefreshKey}
+                  onPrepareBackend={(version, status) => {
+                    setBackendSetup({
+                      module,
+                      version,
+                      status,
+                      phase: "review",
+                      progress: null,
+                      failureCode: null,
+                      taskId: status.preparation_task_id,
+                      proceed: () => undefined,
+                    });
+                  }}
                 />
               ))}
             </div>
@@ -1347,7 +1704,7 @@ export function WorkshopPanel({
                 />
               }
             >
-              {t("workshop.manager.catalogInvalid")}
+              {t(catalog ? "workshop.manager.catalogInvalid" : "workshop.manager.catalogUnavailable")}
             </StatusBanner>
           ) : (
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
@@ -1428,6 +1785,8 @@ export function WorkshopPanel({
           )
         ) : null}
 
+        {view === "storage" ? <StorageOverview api={backendApi} /> : null}
+
         {view === "developer" ? (
           <div className="grid gap-5 lg:grid-cols-2">
             <section className={resolveSectionCardClass("standard")}>
@@ -1501,6 +1860,45 @@ export function WorkshopPanel({
         />
       ) : null}
 
+      {backendSetup ? (
+        <BackendSetupDialog
+          moduleName={moduleDisplayName(
+            backendSetup.module,
+            backendSetup.version,
+            lang,
+          )}
+          status={backendSetup.status}
+          phase={backendSetup.phase}
+          progress={backendSetup.progress}
+          cancelling={backendSetup.cancelling}
+          failureCode={backendSetup.failureCode}
+          failureDetail={backendSetup.failureDetail}
+          cancelError={
+            backendSetup.cancelErrorKey
+              ? t("workshop.backend.cancelFailed").replace("{reason}", t(backendSetup.cancelErrorKey))
+              : null
+          }
+          onConfirm={confirmBackendSetup}
+          onRetry={() =>
+            setBackendSetup((current) =>
+              current === null
+                ? current
+                : { ...current, phase: "review", taskId: null, failureCode: null, failureDetail: null },
+            )
+          }
+          onCancel={cancelBackendSetup}
+        />
+      ) : null}
+
+      {materialImportDialog}
+
+      {uninstallReport ? (
+        <UninstallReportDialog
+          report={uninstallReport}
+          onClose={() => setUninstallReport(null)}
+        />
+      ) : null}
+
       {permissionPrompt ? (
         <div
           role="dialog"
@@ -1547,7 +1945,8 @@ export function WorkshopPanel({
                     {t(permissionTranslationKey(permission.name))}
                   </p>
                   <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">
-                    {permission.reason}
+                    {(lang === "zh" ? permission.reason_i18n?.zh_cn : permission.reason_i18n?.en_us)
+                      ?? permission.reason}
                   </p>
                 </li>
               ))}
@@ -1607,6 +2006,41 @@ export function WorkshopPanel({
               />
               <span>{t("workshop.manager.deleteProjects")}</span>
             </label>
+            {moduleHasBackend(uninstallPrompt.module) ? (
+              <>
+                <label className="mt-3 flex items-start gap-3 rounded-2xl border border-[color:var(--surface-outline)] p-3 text-sm text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={uninstallPrompt.deleteTaskData}
+                    onChange={(event) =>
+                      setUninstallPrompt({
+                        ...uninstallPrompt,
+                        deleteTaskData: event.target.checked,
+                      })
+                    }
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <span>{t("workshop.manager.deleteTaskData")}</span>
+                </label>
+                <label className="mt-3 flex items-start gap-3 rounded-2xl border border-[color:var(--surface-outline)] p-3 text-sm text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={uninstallPrompt.retainModels}
+                    onChange={(event) =>
+                      setUninstallPrompt({
+                        ...uninstallPrompt,
+                        retainModels: event.target.checked,
+                      })
+                    }
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <span>{t("workshop.manager.retainModels")}</span>
+                </label>
+                <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                  {t("workshop.manager.uninstallBackendNote")}
+                </p>
+              </>
+            ) : null}
             <div className="mt-5 flex justify-end gap-2">
               <Button
                 label={t("workshop.manager.cancel")}

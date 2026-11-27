@@ -24,6 +24,17 @@ vi.mock("../api/extractor", () => ({
 }));
 
 describe("MaterialLibraryPanel", () => {
+  it("preserves local materials after a failed refresh and never reports a false empty library", async () => {
+    vi.mocked(listGradientCardMaterials).mockResolvedValue({ status: "ok", message: "ok", materials: [{ material_name: "Kept PLA", directory_name: "kept", material_file_url: "/materials/kept.json", estimated_rgb: [1, 2, 3] }] });
+    render(<MaterialLibraryPanel />);
+    fireEvent.click(await screen.findByTestId("material-library-brand-group-toggle"));
+    expect(screen.getByText("Kept PLA")).toBeInTheDocument();
+    vi.mocked(listGradientCardMaterials).mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: /刷新|Refresh/ }));
+    await screen.findByTestId("material-library-error");
+    expect(screen.getByText("Kept PLA")).toBeInTheDocument();
+    expect(screen.queryByTestId("resource-library-empty")).not.toBeInTheDocument();
+  });
   const expandAllMaterialLibraryGroups = () => {
     for (const toggle of screen.getAllByTestId("material-library-brand-group-toggle")) {
       if (toggle.getAttribute("aria-expanded") === "false") {
@@ -101,14 +112,19 @@ describe("MaterialLibraryPanel", () => {
     expect(screen.queryByText(/下载 material\.json|download material\.json/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/下载 stage_A_parameters\.json|download stage_a_parameters\.json/i)).not.toBeInTheDocument();
     expect(screen.getAllByTestId("material-library-item")).toHaveLength(1);
-    expect(screen.getByText("PETG")).toBeInTheDocument();
+    expect(screen.getByText(/PETG · 0\.\d{2} mm/)).toBeInTheDocument();
+    expect(screen.getByTestId("material-library-card-meta")).toHaveTextContent(/官方|Official/);
     expect(screen.queryByRole("button", { name: /编辑信息|edit details/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /导出所选耗材|export selected/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getAllByTestId("material-library-item")[0]);
     expect(screen.getByTestId("material-library-official-badge")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("material-library-item"));
+    expect(screen.getByTestId("material-library-details")).toHaveAttribute("inert");
+    await waitFor(() => expect(screen.queryByTestId("material-library-details")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("material-library-item"));
     fireEvent.keyDown(screen.getByTestId("material-library-details"), { key: "Escape" });
-    expect(screen.queryByTestId("material-library-details")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId("material-library-details")).not.toBeInTheDocument());
     expect(screen.getByTestId("material-library-item")).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: /选择耗材|select materials/i }));
     fireEvent.click(screen.getByTestId("material-library-item"));
@@ -370,7 +386,7 @@ describe("MaterialLibraryPanel", () => {
     await waitFor(() => {
       expect(within(screen.getByTestId("material-library-details")).getByText("PLA Matte")).toBeInTheDocument();
     });
-    expect(within(screen.getByTestId("material-library-details")).getByText(/Bambu Lab ·/)).toBeInTheDocument();
+    expect(within(screen.getByTestId("material-library-details")).getByText(/拓竹 ·/)).toBeInTheDocument();
   });
 
   it("edits the display color via hex input from the library", async () => {
@@ -650,6 +666,7 @@ describe("MaterialLibraryPanel", () => {
           material_name: "PLA Basic",
           directory_name: "Brand/PLA Basic_20260709_145858",
           brand: "Brand",
+          display: { color_code: "10100" },
           created_at: "2026-07-09T14:58:58Z",
           updated_at: "2026-07-09T15:30:00Z",
           material_file_url: "/api/files/material-json-new",
@@ -658,6 +675,7 @@ describe("MaterialLibraryPanel", () => {
           layer_height_mm: 0.04,
           mean_delta_e: 1.23,
           verification_count: 3,
+          usage_total: 5,
           verification_history: [
             {
               verification_index: 3,
@@ -723,10 +741,18 @@ describe("MaterialLibraryPanel", () => {
     const cards = screen.getAllByTestId("material-library-item");
     expect(within(cards[0]).getByTestId("material-library-duplicate-badge")).toHaveTextContent("2026");
     expect(within(cards[1]).getByTestId("material-library-duplicate-badge")).toHaveTextContent("2026");
-    expect(within(cards[0]).getByTestId("material-library-card-fit-error")).toHaveTextContent("拟合误差");
+    expect(within(cards[0]).queryByTestId("material-library-card-fit-error")).not.toBeInTheDocument();
+    expect(cards[0]).not.toHaveTextContent(/拟合误差|Fit Error/);
+    expect(cards[0]).toHaveTextContent("0.04 mm");
+    expect(within(cards[0]).getByTestId("material-library-card-meta")).toHaveTextContent("#10100 · 自测校准 · 已用 5 次");
+    expect(within(cards[1]).getByTestId("material-library-card-meta")).toHaveTextContent("自测校准");
+    expect(within(cards[1]).getByTestId("material-library-card-meta")).not.toHaveTextContent(/已用/);
     expect(cards[0]).not.toHaveTextContent("PLA Basic_");
     fireEvent.click(cards[0]);
-    expect(within(screen.getByTestId("material-library-details")).getByText("Brand/PLA Basic_20260709_145858")).toBeInTheDocument();
+    const detailsPanel = screen.getByTestId("material-library-details");
+    expect(within(detailsPanel).getByText("Brand/PLA Basic_20260709_145858")).toBeInTheDocument();
+    expect(within(detailsPanel).getByText("拟合误差")).toBeInTheDocument();
+    expect(within(detailsPanel).getByText("1.23")).toBeInTheDocument();
     fireEvent.click(cards[1]);
     fireEvent.click(screen.getByRole("button", { name: /删除耗材|delete material/i }));
 
@@ -752,7 +778,7 @@ describe("MaterialLibraryPanel", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/还没有已保存的耗材档案|No saved material archives yet/i),
+        screen.getByText(/本地暂无耗材档案|No local material profiles/i),
       ).toBeInTheDocument();
     });
   });
@@ -939,7 +965,7 @@ describe("MaterialLibraryPanel", () => {
     render(<MaterialLibraryPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText(/还没有已保存的耗材档案|No saved material archives yet/i)).toBeInTheDocument();
+      expect(screen.getByText(/本地暂无耗材档案|No local material profiles/i)).toBeInTheDocument();
     });
 
     const importInput = screen.getByTestId("material-library-import-input");

@@ -26,6 +26,12 @@ import type {
 
 const COLORCHECKER_SOURCE_PREVIEW_TIMEOUT_MS = 3_600_000;
 
+/** Install current confirmed metadata, not the pre-confirmation download snapshot. */
+export async function installExtractedLut(sessionId: string): Promise<{ name: string; contribution?: { id?: string; state: string } | null }> {
+  const response = await apiClient.post<{ name: string; contribution?: { id?: string; state: string } | null }>(`/extractor/${encodeURIComponent(sessionId)}/install-lut`);
+  return response.data;
+}
+
 /** 提取颜色 - multipart/form-data */
 export async function extractColors(
   image: File | null,
@@ -633,6 +639,7 @@ export async function exportGradientCardMaterials(
 
 export async function importGradientCardMaterials(
   archives: File[],
+  options?: { signal?: AbortSignal },
 ): Promise<GradientCardMaterialBulkImportResponse> {
   const fd = new FormData();
   archives.forEach((archive) => {
@@ -641,7 +648,7 @@ export async function importGradientCardMaterials(
   const response = await apiClient.post<GradientCardMaterialBulkImportResponse>(
     "/extractor/gradient-card-materials/import",
     fd,
-    { timeout: 3_600_000 },
+    { timeout: 3_600_000, signal: options?.signal },
   );
   return response.data;
 }

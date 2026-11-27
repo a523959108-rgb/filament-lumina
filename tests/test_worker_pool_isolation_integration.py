@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from multiprocessing.connection import wait as wait_for_process_exit
 import gc
 import io
 import json
@@ -14,6 +16,7 @@ import weakref
 
 import pytest
 
+from api import worker_pool
 from api.worker_pool import WorkerPoolManager
 
 
@@ -47,6 +50,51 @@ def test_idle_dispatcher_does_not_retain_the_last_preview() -> None:
         pool.shutdown(wait=True)
 
 
+@pytest.mark.parametrize("wakeup_failures", [1, 2])
+def test_runtime_switch_shutdown_failure_retires_worker(
+    monkeypatch: pytest.MonkeyPatch, wakeup_failures: int,
+) -> None:
+    executors: list[ProcessPoolExecutor] = []
+
+    def track_executor(**kwargs) -> ProcessPoolExecutor:
+        executor = ProcessPoolExecutor(**kwargs)
+        executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(worker_pool, "ProcessPoolExecutor", track_executor)
+    pool = worker_pool._IsolatedProcessExecutor(max_workers=1, max_tasks_per_child=None)
+    try:
+        old_pid = pool.submit(os.getpid, task_name="writer", runtime_group=None).result(timeout=20)
+        old_executor = executors[0]
+        sentinel = old_executor._processes[old_pid].sentinel
+        wakeup = old_executor._executor_manager_thread_wakeup
+        notify_manager = wakeup.wakeup
+        attempts = 0
+
+        def fail_shutdown_wakeup() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts <= wakeup_failures:
+                raise OSError(f"injected shutdown wakeup failure {attempts}")
+            notify_manager()
+
+        with monkeypatch.context() as fault:
+            fault.setattr(wakeup, "wakeup", fail_shutdown_wakeup)
+            switch = pool.submit(os.getpid, task_name="vectorize", runtime_group="vectorizer")
+            with pytest.raises(OSError, match="injected shutdown wakeup failure 1"):
+                switch.result(timeout=20)
+        assert attempts >= wakeup_failures
+
+        old_worker_exited = bool(wait_for_process_exit([sentinel], timeout=0))
+        # Use the old group first. This would reuse a half-closed executor if
+        # the failed switch never retired it.
+        new_pid = pool.submit(os.getpid, task_name="next writer", runtime_group=None).result(timeout=20)
+        assert new_pid != old_pid
+        assert old_worker_exited, "The old worker was still alive when the failed switch returned"
+    finally:
+        pool.shutdown(wait=True)
+
+
 def _blocked_read(source_path: str, marker: str, *, crash: bool = False) -> tuple[bytes, int]:
     started = Path(marker + ".started")
     # Exclusive creation also detects an unwanted replay of the same job.
@@ -64,6 +112,13 @@ def _blocked_read(source_path: str, marker: str, *, crash: bool = False) -> tupl
 
 def _blocked_crash(source_path: str, marker: str) -> None:
     _blocked_read(source_path, marker, crash=True)
+
+
+def _gamut_worker_crash() -> None:
+    from api.worker_diagnostics import report_worker_stage
+
+    report_worker_stage("gamut_hull", cache_state="warm", row_count=1_368_639)
+    os._exit(23)
 
 
 async def _started(marker: Path) -> int:
@@ -137,18 +192,21 @@ def test_crash_log_identifies_the_original_request(
     monkeypatch.setattr(worker_pool, "_log", logger)
     pool = WorkerPoolManager(max_workers=1)
     pool.start()
-    failing = tmp_path / "crash"
-    _release(failing)
     request_token = set_request_id("preview-request")
     session_token = set_session_id("preview-session")
     try:
         with pytest.raises(BrokenProcessPool):
-            asyncio.run(pool.submit(_blocked_crash, "unused", str(failing)))
+            asyncio.run(pool.submit(_gamut_worker_crash))
         payload = json.loads(output.getvalue())
         assert payload["request_id"] == "preview-request"
         assert payload["session_id"] == "preview-session"
-        assert payload["worker_name"] == "_blocked_crash"
+        assert payload["worker_name"] == "_gamut_worker_crash"
         assert payload["surviving_workers"] == 0
+        assert payload["worker_pid"] > 0
+        assert payload["worker_exit_code"] == 23
+        assert payload["worker_phase"] == "gamut_hull"
+        assert payload["worker_cache_state"] == "warm"
+        assert payload["worker_row_count"] == 1_368_639
     finally:
         reset_request_id(request_token)
         reset_session_id(session_token)

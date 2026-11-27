@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 import numpy as np
 from utils.fatcat_metadata import (
@@ -212,9 +212,8 @@ class _SourceMesh:
         original_id: Original ``<object id>`` inside the source per-item
             ``.model`` file. Kept only for diagnostics; the writer
             renumbers to globally-unique IDs.
-        element: The cloned ``<object>`` ElementTree element (with mesh
-            geometry); ready to be serialised into the merged 3MF after
-            the ``id`` attribute is rewritten.
+        element: Object attributes and metadata, with vertex and triangle
+            rows omitted. Geometry is loaded only while queuing this mesh.
         metadata: Fat Cat decoded metadata attached to this model object.
             Fat Cat 读取的模型对象元数据。
     """
@@ -229,8 +228,8 @@ class _SourceAssembly:
     """The aggregate of one ``MergedItem`` after parsing its source 3MF.
 
     Attributes:
-        meshes: All mesh ``<object>`` elements referenced by the source's
-            top-level build item, in their declaration order.
+        meshes: Lightweight mesh descriptions in source component order.
+        source_mesh_path: Archive member containing the referenced geometry.
         source_assembly_id: Source build object's id in the source 3MF.
         min_x: Minimum X vertex coordinate across all ``meshes`` (mm),
             after applying source component transforms.
@@ -244,6 +243,7 @@ class _SourceAssembly:
     """
 
     meshes: tuple[_SourceMesh, ...]
+    source_mesh_path: str
     source_assembly_id: int
     source_assembly_uuid: str
     source_build_item_uuid: str
@@ -293,19 +293,6 @@ def _parse_transform_matrix(transform_str: str) -> list[float]:
     return values
 
 
-def _apply_transform_xyz(
-    matrix: list[float], vx: float, vy: float, vz: float
-) -> tuple[float, float, float]:
-    """Apply a 3MF row-vector affine transform and return all coordinates."""
-
-    m = matrix
-    return (
-        m[0] * vx + m[3] * vy + m[6] * vz + m[9],
-        m[1] * vx + m[4] * vy + m[7] * vz + m[10],
-        m[2] * vx + m[5] * vy + m[8] * vz + m[11],
-    )
-
-
 def _validate_slots(slots: Sequence[MaterialSlot]) -> None:
     """Require a nonempty sequence of MaterialSlot values with unique IDs."""
 
@@ -324,13 +311,69 @@ def _validate_slots(slots: Sequence[MaterialSlot]) -> None:
         seen_ids.add(slot.slot_id)
 
 
+def _read_model_structure(
+    package: zipfile.ZipFile,
+    path: str,
+    transforms: Mapping[str, Sequence[Sequence[float]]] | None = None,
+) -> tuple[ET.Element, list[float]]:
+    """Keep object metadata while streaming geometry into transformed bounds."""
+    bounds = [math.inf, math.inf, math.inf, -math.inf, -math.inf, -math.inf]
+    stack: list[ET.Element] = []
+    # Transform a small vertex block in NumPy without retaining the full mesh.
+    coordinates = np.empty((4096, 3), dtype=np.float64)
+    coordinate_count = 0
+    matrices: list[np.ndarray] = []
+
+    def flush_coordinates() -> None:
+        nonlocal coordinate_count
+        if coordinate_count == 0:
+            return
+        points = coordinates[:coordinate_count]
+        if not np.isfinite(points).all():
+            raise MergedWriteError("Source model has non-finite vertex coordinates")
+        for matrix in matrices:
+            transformed = points @ matrix[:9].reshape((3, 3)) + matrix[9:]
+            lower, upper = transformed.min(axis=0), transformed.max(axis=0)
+            for axis in range(3):
+                bounds[axis] = min(bounds[axis], float(lower[axis]))
+                bounds[axis + 3] = max(bounds[axis + 3], float(upper[axis]))
+        coordinate_count = 0
+
+    with package.open(path) as stream:
+        parser = ET.iterparse(stream, events=("start", "end"))
+        for event, element in parser:
+            if event == "start":
+                stack.append(element)
+                if element.tag == _qname_core("object"):
+                    matrices = [
+                        np.asarray(matrix, dtype=np.float64)
+                        for matrix in (transforms or {}).get(element.get("id", ""), ())
+                    ]
+                continue
+            if element.tag == _qname_core("vertex"):
+                if matrices and element.get("x") is not None and element.get("y") is not None:
+                    coordinates[coordinate_count] = [
+                        float(element.get(axis, "0")) for axis in ("x", "y", "z")
+                    ]
+                    coordinate_count += 1
+                    if coordinate_count == len(coordinates):
+                        flush_coordinates()
+                stack[-2].remove(element)
+            elif element.tag == _qname_core("triangle"):
+                stack[-2].remove(element)
+            elif element.tag == _qname_core("object"):
+                flush_coordinates()
+                matrices = []
+            stack.pop()
+        return parser.root, bounds
+
+
 def _parse_source_assembly(
     item_idx: int, item: MergedItem, *, metadata_target: MetadataTarget | None = None,
 ) -> _SourceAssembly:
-    """Parse one source 3MF and extract its mesh objects + metadata.
+    """Read source bounds and metadata without retaining mesh XML rows.
 
-    解析单个源 3MF，提取该 item 的 mesh 对象与元数据。
-    Preserves component transforms and UUIDs from source.
+    Preserve source component order, transforms, UUIDs and material identity.
     """
 
     from utils.fatcat_metadata import _read_source_metadata_parts, read_model_object_metadata
@@ -345,16 +388,15 @@ def _parse_source_assembly(
 
     try:
         with zipfile.ZipFile(src_path, "r") as zf:
-            source_metadata, source_parts = _read_source_metadata_parts(
-                zf, target=metadata_target,
-            )
-            main_model_bytes = source_parts.get("source_model")
-            if main_model_bytes is None:
+            if "3D/3dmodel.model" not in zf.namelist():
                 raise MergedWriteError(
                     f"MergedItem[{item_idx}].source_3mf_path missing 3D/3dmodel.model"
                 )
-
-            main_root = _parse_xml_bytes(main_model_bytes)
+            main_root, _ = _read_model_structure(zf, "3D/3dmodel.model")
+            source_metadata, source_parts = _read_source_metadata_parts(
+                zf, target=metadata_target,
+                source_model_xml=ET.tostring(main_root, encoding="unicode"),
+            )
             root_metadata = source_metadata["source_root_metadata"]
 
             # Identify the build target object id.
@@ -437,18 +479,20 @@ def _parse_source_assembly(
             per_item_path = next(iter(distinct_paths))
             # Strip leading slash for zip path.
             per_item_zip_path = per_item_path.lstrip("/")
+            transforms: dict[str, list[list[float]]] = {}
+            for _, object_id, transform, _ in referenced:
+                transforms.setdefault(object_id, []).append(_parse_transform_matrix(transform))
             try:
-                per_item_bytes = zf.read(per_item_zip_path)
+                per_item_root, bounds = _read_model_structure(zf, per_item_zip_path, transforms)
             except KeyError as exc:
                 raise MergedWriteError(
                     f"MergedItem[{item_idx}].source_3mf_path missing per-item model "
                     f"{per_item_zip_path!r}"
                 ) from exc
 
-            per_item_root = _parse_xml_bytes(per_item_bytes)
             object_metadata = {
                 item["id"]: tuple(item["metadata"])
-                for item in read_model_object_metadata(per_item_bytes.decode("utf-8"))
+                for item in read_model_object_metadata(ET.tostring(per_item_root, encoding="unicode"))
             }
             per_item_resources = per_item_root.find(_qname_core("resources"))
             if per_item_resources is None:
@@ -478,59 +522,7 @@ def _parse_source_assembly(
                 component_transforms.append(comp_transform)
                 component_uuids.append(comp_uuid)
 
-            # Compute XY bbox across all referenced mesh vertices,
-            # applying source component transforms to each vertex.
-            min_x = float("inf")
-            min_y = float("inf")
-            max_x = float("-inf")
-            max_y = float("-inf")
-            min_z = float("inf")
-            max_z = float("-inf")
-            for comp_idx, (_, obj) in enumerate(ordered_mesh_objs):
-                mesh = obj.find(_qname_core("mesh"))
-                if mesh is None:
-                    continue
-                vertices = mesh.find(_qname_core("vertices"))
-                if vertices is None:
-                    continue
-                # Parse the component transform for this mesh
-                transform_matrix = _parse_transform_matrix(
-                    component_transforms[comp_idx]
-                )
-                for vert in vertices.findall(_qname_core("vertex")):
-                    x_str = vert.get("x")
-                    y_str = vert.get("y")
-                    z_str = vert.get("z")
-                    if x_str is None or y_str is None:
-                        continue
-                    try:
-                        vx = float(x_str)
-                        vy = float(y_str)
-                        vz = float(z_str) if z_str is not None else 0.0
-                    except ValueError as exc:
-                        raise MergedWriteError(
-                            f"MergedItem[{item_idx}] per-item model has non-numeric "
-                            f"vertex coordinate ({x_str!r}, {y_str!r})"
-                        ) from exc
-                    # Apply component transform to vertex
-                    tx, ty, tz = _apply_transform_xyz(
-                        transform_matrix,
-                        vx,
-                        vy,
-                        vz,
-                    )
-                    if tx < min_x:
-                        min_x = tx
-                    if ty < min_y:
-                        min_y = ty
-                    if tx > max_x:
-                        max_x = tx
-                    if ty > max_y:
-                        max_y = ty
-                    if tz < min_z:
-                        min_z = tz
-                    if tz > max_z:
-                        max_z = tz
+            min_x, min_y, min_z, max_x, max_y, max_z = bounds
             if (
                 not all(math.isfinite(value) for value in (
                     min_x, min_y, max_x, max_y, min_z, max_z,
@@ -566,6 +558,7 @@ def _parse_source_assembly(
 
             return _SourceAssembly(
                 meshes=tuple(meshes),
+                source_mesh_path=per_item_zip_path,
                 source_assembly_id=int(target_objectid),
                 source_model_index=1,
                 source_build_transform=tuple(source_build_transform),
@@ -597,6 +590,43 @@ def _parse_source_assembly(
         raise MergedWriteError(
             f"MergedItem[{item_idx}].source_3mf_path has invalid XML: {exc}"
         ) from exc
+    except ValueError as exc:
+        raise MergedWriteError(
+            f"MergedItem[{item_idx}].source_3mf_path has invalid geometry: {exc}"
+        ) from exc
+
+
+def _iter_source_meshes(
+    item: MergedItem, assembly: _SourceAssembly,
+) -> Iterator[tuple[int, _SourceMesh, ET.Element]]:
+    """Load one referenced mesh at a time and release it after native copying."""
+    by_id: dict[str, list[tuple[int, _SourceMesh]]] = {}
+    for index, mesh in enumerate(assembly.meshes):
+        by_id.setdefault(mesh.element.get("id", ""), []).append((index, mesh))
+    stack: list[ET.Element] = []
+    selected = False
+    seen: set[str] = set()
+    with zipfile.ZipFile(item.source_3mf_path) as package:
+        with package.open(assembly.source_mesh_path) as stream:
+            for event, element in ET.iterparse(stream, events=("start", "end")):
+                if event == "start":
+                    stack.append(element)
+                    if element.tag == _qname_core("object"):
+                        selected = element.get("id") in by_id
+                    continue
+                if element.tag == _qname_core("object"):
+                    object_id = element.get("id", "")
+                    for index, mesh in by_id.get(object_id, ()):
+                        yield index, mesh, element
+                    seen.add(object_id)
+                    stack[-2].remove(element)
+                    element.clear()
+                    selected = False
+                elif not selected and element.tag in (_qname_core("vertex"), _qname_core("triangle")):
+                    stack[-2].remove(element)
+                stack.pop()
+    if by_id.keys() - seen:
+        raise MergedWriteError("Source model changed while merging; referenced mesh is missing")
 
 
 def read_merge_source_info(
@@ -627,17 +657,6 @@ def read_merge_source_info(
     return (assembly.max_x - assembly.min_x, assembly.max_y - assembly.min_y), slots
 
 
-def _parse_xml_bytes(payload: bytes) -> ET.Element:
-    """Parse XML bytes and return the root element.
-
-    Bare wrapper around ``ET.fromstring`` so the call sites remain
-    declarative; ParseError is allowed to bubble so callers can wrap it
-    into ``MergedWriteError`` with a fileset-aware message.
-    """
-
-    return ET.fromstring(payload)
-
-
 def _extract_mesh_arrays(
     mesh_element: ET.Element,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -646,35 +665,27 @@ def _extract_mesh_arrays(
     从源 3MF 的 mesh <object> 元素中提取顶点和面数组。
 
     Returns:
-        (vertices, faces) as numpy arrays (float64, int64).
+        (vertices, faces) as compact native numpy arrays (float32, uint32).
     """
     mesh_elem = mesh_element.find(_qname_core("mesh"))
     if mesh_elem is None:
-        return np.zeros((0, 3), dtype=np.float64), np.zeros((0, 3), dtype=np.int64)
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint32)
 
     vertices_elem = mesh_elem.find(_qname_core("vertices"))
     triangles_elem = mesh_elem.find(_qname_core("triangles"))
 
-    # Parse vertices.
-    verts_list: list[list[float]] = []
+    vertices = np.empty((0, 3), dtype=np.float32)
     if vertices_elem is not None:
-        for v in vertices_elem.findall(_qname_core("vertex")):
-            x = float(v.get("x", "0"))
-            y = float(v.get("y", "0"))
-            z = float(v.get("z", "0"))
-            verts_list.append([x, y, z])
-
-    # Parse faces.
-    faces_list: list[list[int]] = []
+        vertices = np.fromiter(
+            (float(v.get(axis, "0")) for v in vertices_elem for axis in ("x", "y", "z")),
+            dtype=np.float32, count=len(vertices_elem) * 3,
+        ).reshape((-1, 3))
+    faces = np.empty((0, 3), dtype=np.uint32)
     if triangles_elem is not None:
-        for t in triangles_elem.findall(_qname_core("triangle")):
-            v1 = int(t.get("v1", "0"))
-            v2 = int(t.get("v2", "0"))
-            v3 = int(t.get("v3", "0"))
-            faces_list.append([v1, v2, v3])
-
-    vertices = np.array(verts_list, dtype=np.float64) if verts_list else np.zeros((0, 3), dtype=np.float64)
-    faces = np.array(faces_list, dtype=np.int64) if faces_list else np.zeros((0, 3), dtype=np.int64)
+        faces = np.fromiter(
+            (int(t.get(axis, "0")) for t in triangles_elem for axis in ("v1", "v2", "v3")),
+            dtype=np.uint32, count=len(triangles_elem) * 3,
+        ).reshape((-1, 3))
     return vertices, faces
 
 
@@ -819,6 +830,22 @@ def _resolve_merged_wipe_tower_placement(
             assembly.min_z for assembly in assemblies
         )
         model_translation_locked = False
+    coating_layer_height = None
+    if build_transforms is not None and any(
+        slot.slot_name == "Coating" for item in items for slot in item.slots
+    ):
+        layer_heights = [layout["layer_height"]]
+        if layout["initial_layer_height"] is not None:
+            layer_heights.append(layout["initial_layer_height"])
+        for assembly in assemblies:
+            layer_ranges = assembly.metadata_parts.get("Metadata/layer_config_ranges.xml")
+            if layer_ranges is not None:
+                layer_heights.extend(
+                    float(option.text)
+                    for option in ET.fromstring(layer_ranges).findall(".//option[@opt_key='layer_height']")
+                    if option.text
+                )
+        coating_layer_height = min(layer_heights)
     request = build_wipe_tower_placement_request(
         layout,
         model_bounds=model_bounds,
@@ -834,6 +861,7 @@ def _resolve_merged_wipe_tower_placement(
         printer_id=printer_id,
         slicer=slicer,
         nozzle_size=nozzle_size,
+        coating_layer_height_mm=coating_layer_height,
     )
     if request is None:
         placement = None
@@ -1166,10 +1194,27 @@ class MergedSlicer3MFWriter:
         project_result = self._compose_project(items, assemblies, metadata_target, source_materials)
         final_project = json.loads(project_result["project_settings_json"])
         resolved_slicer = normalize_slicer_software_id(metadata_target.slicer_id)
-        layout = read_project_layout(
-            {**DEFAULT_EXPORT_SETTINGS, **final_project},
-            slicer_id=resolved_slicer,
-        )
+        layout_settings = {**DEFAULT_EXPORT_SETTINGS, **final_project}
+        if build_transforms is not None and resolved_slicer == "OrcaSlicer":
+            # Orca's native default matters for the assembled tower footprint.
+            layout_settings.setdefault("prime_volume", "45")
+        layout = read_project_layout(layout_settings, slicer_id=resolved_slicer)
+        if build_transforms is not None:
+            finest_piece = min(
+                assemblies,
+                key=lambda piece: piece.source_metadata["layout"]["min_layer_height"] or math.inf,
+            )
+            finest_minimum = finest_piece.source_metadata["layout"]["min_layer_height"]
+            if (
+                finest_minimum is not None
+                and 0 < finest_minimum < (layout["min_layer_height"] or math.inf)
+                and "min_layer_height" in finest_piece.project_settings
+            ):
+                # Keep the native value shape (one setting per nozzle in Bambu/Orca).
+                native_minimum = finest_piece.project_settings["min_layer_height"]
+                final_project["min_layer_height"] = native_minimum
+                layout_settings["min_layer_height"] = native_minimum
+                layout = read_project_layout(layout_settings, slicer_id=resolved_slicer)
         source_layout = assemblies[0].source_metadata["layout"]
         source_nozzles = source_layout["nozzle_diameters"]
         source_nozzle = nozzle_size or (source_nozzles[0] if source_nozzles else None)
@@ -1346,16 +1391,12 @@ class MergedSlicer3MFWriter:
         """Preserve one source's meshes, material properties and component identity."""
         import neroued_3mf as n3mf
 
-        mesh_ids: list[int] = []
+        mesh_ids: list[int] = [0] * len(assembly.meshes)
         face_count = 0
-        for mesh_index, source_mesh in enumerate(assembly.meshes):
-            vertices, faces = _extract_mesh_arrays(source_mesh.element)
+        for mesh_index, source_mesh, source_object in _iter_source_meshes(item, assembly):
+            vertices, faces = _extract_mesh_arrays(source_object)
             face_count += int(faces.shape[0])
-            mesh = n3mf.Mesh.from_arrays(
-                np.ascontiguousarray(vertices, dtype=np.float64),
-                np.ascontiguousarray(faces, dtype=np.int64),
-            )
-            source_object = source_mesh.element
+            mesh = n3mf.Mesh.from_arrays(vertices, faces)
             source_pid = source_object.get("pid")
             source_pindex = source_object.get("pindex")
             target_pid = _map_base_material_id(
@@ -1405,7 +1446,7 @@ class MergedSlicer3MFWriter:
                     if source_pindex is not None else None
                 ),
             )
-            mesh_ids.append(mesh_id)
+            mesh_ids[mesh_index] = mesh_id
             if source_object.get("partnumber"):
                 builder.set_part_number(mesh_id, source_object.get("partnumber"))
             for metadata in source_mesh.metadata:
@@ -1430,30 +1471,29 @@ class MergedSlicer3MFWriter:
                 builder.set_component_uuid(
                     mesh_id, component_uuid or str(uuid.uuid4())
                 )
+            # add_mesh_object owns its native copy. Release Python buffers
+            # before the iterator begins parsing the next source mesh.
+            del vertices, faces, triangle_elements, mesh
         return mesh_ids, face_count
 
     @staticmethod
     def _source_build_transform(
         item: MergedItem, assembly: _SourceAssembly, source_transform: Sequence[float] | None,
     ) -> list[float]:
-        """Select the computed batch placement or the explicit puzzle transform."""
-        if source_transform is None:
-            dx = item.tx_mm - assembly.min_x
-            dy = item.ty_mm - assembly.min_y
-            dz = assembly.source_build_transform[11]
-            build_transform = [
-                1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0,
-                dx, dy, dz,
-            ]
-        else:
-            build_transform = [
-                float(value)
-                for value in source_transform
-            ]
-            dx, dy, dz = build_transform[9:12]
-        return build_transform
+        """Place a piece on the same Z datum used by its source layer ranges."""
+        dz = assembly.source_build_transform[11]
+        if source_transform is not None:
+            build_transform = list(map(float, source_transform))
+            # Lift film below the plate and keep the logical height of
+            # backing-only pieces whose optical cells start higher up.
+            build_transform[11] += max(0.0, dz)
+            return build_transform
+        return [
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            item.tx_mm - assembly.min_x, item.ty_mm - assembly.min_y, dz,
+        ]
 
     @staticmethod
     def _add_source_group(
@@ -1642,7 +1682,9 @@ class MergedSlicer3MFWriter:
         options = n3mf.WriteOptions()
         options.vertex_precision = 9
         options.compact_xml = True
-        n3mf.write_to_file(str(output_path), document, options)
+        from utils.threemf_io import write_3mf_document
+
+        write_3mf_document(output_path, document, options)
 
 
 MergedBambu3MFWriter = MergedSlicer3MFWriter

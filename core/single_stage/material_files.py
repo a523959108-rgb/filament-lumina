@@ -6,6 +6,7 @@ import json
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -13,6 +14,7 @@ from typing import Any, Sequence
 from config import MATERIALS_DIR, TEMP_DIR
 
 _INVALID_WINDOWS_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+INTERNAL_MATERIAL_ROOT_NAMES = frozenset({"_sync", "_solver_cache"})
 
 _MATERIAL_LIBRARY_CACHE_TTL_S = 5 * 60
 
@@ -62,6 +64,42 @@ def _material_library_cache_key(target_root: Path) -> str:
         return str(target_root.absolute())
 
 
+def _material_library_path_state(path: Path) -> tuple[int, ...] | None:
+    """Track replacement, edits, and symlink changes without reading file data.
+
+    The first field is the target mtime, also used for the library's recency order.
+    """
+    try:
+        state, link_state = path.stat(), path.lstat()
+    except OSError:
+        return None
+    return (
+        state.st_mtime_ns, state.st_ctime_ns, state.st_size,
+        state.st_dev, state.st_ino, state.st_mode,
+        link_state.st_mtime_ns, link_state.st_ctime_ns, link_state.st_ino,
+    )
+
+
+def _material_library_directory_children(directory: Path) -> frozenset[str] | None:
+    listing = next(directory.walk(), None)
+    return frozenset(listing[1]) if listing is not None else None
+
+
+@dataclass
+class _MaterialLibrarySnapshot:
+    path_states: dict[Path, tuple[int, ...] | None] = field(default_factory=dict)
+    directory_children: dict[Path, frozenset[str] | None] = field(default_factory=dict)
+
+    def is_current(self) -> bool:
+        if any(_material_library_path_state(path) != state for path, state in self.path_states.items()):
+            return False
+        # Rapid directory changes can leave the parent's stat signature unchanged.
+        return all(
+            _material_library_directory_children(directory) == children
+            for directory, children in self.directory_children.items()
+        )
+
+
 def _cached_material_library_items(target_root: Path) -> list[dict[str, Any]] | None:
     cache_key = _material_library_cache_key(target_root)
     now = time.monotonic()
@@ -73,18 +111,32 @@ def _cached_material_library_items(target_root: Path) -> list[dict[str, Any]] | 
         if now - cached_at > _MATERIAL_LIBRARY_CACHE_TTL_S:
             _MATERIAL_LIBRARY_CACHE.pop(cache_key, None)
             return None
-        payload = cached.get("payload")
-        if not isinstance(payload, list):
-            return None
-        return _json_clone(payload)
+        payload, snapshot = cached.get("payload"), cached.get("snapshot")
+    if not isinstance(payload, list) or not isinstance(snapshot, _MaterialLibrarySnapshot):
+        return None
+    if not snapshot.is_current():
+        with _MATERIAL_LIBRARY_CACHE_LOCK:
+            if _MATERIAL_LIBRARY_CACHE.get(cache_key) is cached:
+                _MATERIAL_LIBRARY_CACHE.pop(cache_key, None)
+        return None
+    return _json_clone(payload)
 
 
-def _store_material_library_cache(target_root: Path, payload: list[dict[str, Any]]) -> None:
+def _store_material_library_cache(
+    target_root: Path,
+    payload: list[dict[str, Any]],
+    *,
+    snapshot: _MaterialLibrarySnapshot,
+) -> None:
+    # Never pair already-built summaries with a newer, unvalidated file state.
+    if not snapshot.is_current():
+        return
     cache_key = _material_library_cache_key(target_root)
     with _MATERIAL_LIBRARY_CACHE_LOCK:
         _MATERIAL_LIBRARY_CACHE[cache_key] = {
             "cached_at": time.monotonic(),
             "payload": _json_clone(payload),
+            "snapshot": snapshot,
         }
 
 
@@ -178,21 +230,6 @@ def _prune_empty_parents(start_dir: Path, stop_dir: Path) -> None:
         except OSError:
             return
         current = current.parent
-
-
-def _filter_nested_material_archive_paths(archive_paths: list[Path]) -> list[Path]:
-    material_dirs_set = {path.parent.resolve() for path in archive_paths if path.is_file()}
-    filtered_archive_paths: list[Path] = []
-    for path in archive_paths:
-        try:
-            parent = path.parent.resolve()
-        except OSError:
-            continue
-        ancestors = set(parent.parents) & material_dirs_set
-        if ancestors:
-            continue
-        filtered_archive_paths.append(path)
-    return filtered_archive_paths
 
 
 def _load_json_object(path: Path, error_message: str) -> dict[str, Any]:
@@ -344,9 +381,44 @@ def invalidate_material_library_cache(materials_dir: str | None = None) -> None:
     _invalidate_material_library_cache(Path(materials_dir or MATERIALS_DIR))
 
 
-def _discover_saved_material_dirs(material_root: Path) -> list[Path]:
-    archive_paths = [path for path in material_root.rglob("material.json") if path.is_file()]
-    return [path.parent for path in _filter_nested_material_archive_paths(archive_paths)]
+def _is_internal_material_directory(directory_name: str) -> bool:
+    return any(
+        part.casefold() in INTERNAL_MATERIAL_ROOT_NAMES
+        for part in directory_name.replace("\\", "/").split("/")
+    )
+
+
+def _discover_saved_material_dirs(
+    material_root: Path, *, include_internal: bool = False,
+    snapshot: _MaterialLibrarySnapshot | None = None,
+) -> list[Path]:
+    """Find archives, excluding internal stores by default and nested runs always."""
+    archives: list[Path] = []
+    if snapshot is not None:
+        snapshot.directory_children[material_root] = None
+    for directory, subdirs, _ in material_root.walk():
+        archive = directory / "material.json"
+        if snapshot is not None:
+            snapshot.path_states[directory] = _material_library_path_state(directory)
+            snapshot.path_states[archive] = _material_library_path_state(archive)
+        if archive.is_file():
+            archives.append(directory)
+            subdirs.clear()
+            if snapshot is not None:
+                snapshot.directory_children.pop(directory, None)
+            continue
+        if snapshot is not None:
+            snapshot.directory_children[directory] = frozenset(subdirs)
+        if not include_internal:
+            subdirs[:] = [name for name in subdirs if not _is_internal_material_directory(name)]
+        if snapshot is not None:
+            # walk() skips unreadable children; keep their permission state so a
+            # repaired subtree can invalidate an otherwise empty cached list.
+            for name in subdirs:
+                child = directory / name
+                snapshot.path_states[child] = _material_library_path_state(child)
+                snapshot.directory_children[child] = None
+    return archives
 
 
 def _import_target_material_dir(target_root: Path, directory_name: str) -> Path:

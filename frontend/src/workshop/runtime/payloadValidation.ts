@@ -1,6 +1,7 @@
 import type {
+  HostWorkshopRpcMethod,
+  WorkshopMaterialImportRequest,
   WorkshopModuleIdentity,
-  WorkshopRpcMethod,
 } from "../contracts";
 
 
@@ -12,6 +13,20 @@ const MAX_PROJECT_ID_LENGTH = 256;
 const MAX_SCHEMA_VERSION_LENGTH = 128;
 const MAX_STATUS_TEXT_LENGTH = 500;
 const MAX_DIAGNOSTIC_FIELDS = 64;
+const MAX_BACKEND_INPUTS = 8;
+const MAX_BACKEND_PARAMS_BYTES = 64 * 1024;
+const BACKEND_TASK_ID = /^[0-9a-f]{32}$/;
+const BACKEND_OPERATION = /^[a-z][a-z0-9.-]{0,63}$/;
+const BACKEND_FILE_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const BACKEND_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/;
+/** One Stage-A material archive per `material.import` call. */
+export const WORKSHOP_MATERIAL_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+const MATERIAL_IMPORT_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,123}\.zip$/i;
+const MAX_MATERIAL_SUMMARY_ITEMS = 16;
+const MAX_MATERIAL_SUMMARY_NOTES = 8;
+const MAX_MATERIAL_SUMMARY_TEXT = 120;
+const BACKEND_MIME_TYPE =
+  /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/;
 
 export type RpcPayloadValidationCode =
   | "rpc-payload-invalid"
@@ -519,13 +534,201 @@ function validateDiagnostics(payload: unknown): unknown {
   return Object.fromEntries(entries);
 }
 
+function validateBackendSubmit(payload: unknown): unknown {
+  if (
+    !isRecord(payload) ||
+    !hasOnlyKeys(payload, ["operation", "params", "inputs"], ["idempotencyKey"]) ||
+    typeof payload.operation !== "string" ||
+    !BACKEND_OPERATION.test(payload.operation) ||
+    !isRecord(payload.params) ||
+    !Array.isArray(payload.inputs) ||
+    payload.inputs.length > MAX_BACKEND_INPUTS ||
+    ("idempotencyKey" in payload &&
+      !boundedString(payload.idempotencyKey, 128))
+  ) {
+    return invalidPayload("Workshop backend task request is invalid.");
+  }
+  let params: Record<string, unknown>;
+  try {
+    const encoded = JSON.stringify(payload.params);
+    if (utf8Bytes(encoded) > MAX_BACKEND_PARAMS_BYTES) {
+      throw new RpcPayloadValidationError(
+        "rpc-payload-too-large",
+        "Workshop backend task parameters exceed 64 KiB.",
+      );
+    }
+    params = JSON.parse(encoded) as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof RpcPayloadValidationError) {
+      throw error;
+    }
+    return invalidPayload("Workshop backend task parameters must be JSON.");
+  }
+  const names = new Set<string>();
+  const inputs = payload.inputs.map((item) => {
+    if (
+      !isRecord(item) ||
+      !hasOnlyKeys(item, ["name", "fileName", "mimeType", "bytes"]) ||
+      typeof item.name !== "string" ||
+      !BACKEND_FILE_KEY.test(item.name) ||
+      names.has(item.name) ||
+      typeof item.fileName !== "string" ||
+      !BACKEND_FILE_NAME.test(item.fileName) ||
+      /[. ]$/.test(item.fileName) ||
+      typeof item.mimeType !== "string" ||
+      !BACKEND_MIME_TYPE.test(item.mimeType) ||
+      !(item.bytes instanceof ArrayBuffer) ||
+      item.bytes.byteLength === 0
+    ) {
+      return invalidPayload("Workshop backend task input is invalid.");
+    }
+    names.add(item.name);
+    return {
+      name: item.name,
+      fileName: item.fileName,
+      mimeType: item.mimeType,
+      bytes: item.bytes,
+    };
+  });
+  return {
+    operation: payload.operation,
+    params,
+    inputs,
+    ...(typeof payload.idempotencyKey === "string"
+      ? { idempotencyKey: payload.idempotencyKey }
+      : {}),
+  };
+}
+
+function validateBackendTaskId(payload: unknown): unknown {
+  if (
+    !isRecord(payload) ||
+    !hasOnlyKeys(payload, ["taskId"]) ||
+    typeof payload.taskId !== "string" ||
+    !BACKEND_TASK_ID.test(payload.taskId)
+  ) {
+    return invalidPayload("Workshop backend task ID is invalid.");
+  }
+  return { taskId: payload.taskId };
+}
+
+function validateBackendOutput(payload: unknown): unknown {
+  if (
+    !isRecord(payload) ||
+    !hasOnlyKeys(payload, ["taskId", "name"]) ||
+    typeof payload.taskId !== "string" ||
+    !BACKEND_TASK_ID.test(payload.taskId) ||
+    typeof payload.name !== "string" ||
+    !BACKEND_FILE_KEY.test(payload.name)
+  ) {
+    return invalidPayload("Workshop backend output request is invalid.");
+  }
+  return { taskId: payload.taskId, name: payload.name };
+}
+
+/** True when text contains C0 controls or DEL (newlines included). */
+export function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function summaryText(value: unknown): value is string {
+  return (
+    boundedString(value, MAX_MATERIAL_SUMMARY_TEXT) &&
+    // Plain single-line text. 仅允许单行纯文本。
+    !hasControlCharacter(value)
+  );
+}
+
+function validateMaterialImportSummary(
+  value: unknown,
+): WorkshopMaterialImportRequest["summary"] {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["materials"]) ||
+    !Array.isArray(value.materials) ||
+    value.materials.length === 0 ||
+    value.materials.length > MAX_MATERIAL_SUMMARY_ITEMS
+  ) {
+    return invalidPayload("Workshop material import summary is invalid.");
+  }
+  const materials = value.materials.map((item) => {
+    if (
+      !isRecord(item) ||
+      !hasOnlyKeys(item, ["name"], ["brand", "notes"]) ||
+      !summaryText(item.name) ||
+      ("brand" in item && !summaryText(item.brand)) ||
+      ("notes" in item &&
+        (!Array.isArray(item.notes) ||
+          item.notes.length > MAX_MATERIAL_SUMMARY_NOTES ||
+          !item.notes.every(summaryText)))
+    ) {
+      return invalidPayload("Workshop material import summary is invalid.");
+    }
+    return {
+      name: item.name,
+      ...(typeof item.brand === "string" ? { brand: item.brand } : {}),
+      ...(Array.isArray(item.notes)
+        ? { notes: [...(item.notes as string[])] }
+        : {}),
+    };
+  });
+  return { materials };
+}
+
+function validateMaterialImport(
+  payload: unknown,
+): WorkshopMaterialImportRequest {
+  if (
+    !isRecord(payload) ||
+    !hasOnlyKeys(payload, ["archiveBytes", "fileName"], ["summary"]) ||
+    !(payload.archiveBytes instanceof ArrayBuffer) ||
+    typeof payload.fileName !== "string" ||
+    !MATERIAL_IMPORT_FILE_NAME.test(payload.fileName)
+  ) {
+    return invalidPayload("Workshop material import request is invalid.");
+  }
+  if (payload.archiveBytes.byteLength > WORKSHOP_MATERIAL_IMPORT_MAX_BYTES) {
+    throw new RpcPayloadValidationError(
+      "rpc-binary-too-large",
+      "Workshop material archive exceeds 8 MiB.",
+    );
+  }
+  if (payload.archiveBytes.byteLength === 0) {
+    return invalidPayload("Workshop material archive is empty.");
+  }
+  return {
+    archiveBytes: payload.archiveBytes,
+    fileName: payload.fileName,
+    ...("summary" in payload
+      ? { summary: validateMaterialImportSummary(payload.summary) }
+      : {}),
+  };
+}
+
 export function validateMethodPayload(
-  method: WorkshopRpcMethod,
+  method: HostWorkshopRpcMethod,
   payload: unknown,
   identity: WorkshopModuleIdentity,
 ): unknown {
   assertRpcPayloadBounds(payload);
   switch (method) {
+    case "backend.status":
+    case "backend.list":
+      return validateEmptyPayload(payload);
+    case "backend.submit":
+      return validateBackendSubmit(payload);
+    case "backend.get":
+    case "backend.cancel":
+    case "backend.remove":
+      return validateBackendTaskId(payload);
+    case "backend.readOutput":
+      return validateBackendOutput(payload);
     case "image.pick":
     case "project.latest":
     case "colorLibrary.read":
@@ -539,6 +742,8 @@ export function validateMethodPayload(
       return validateProjectIdPayload(payload);
     case "handoff.image":
       return validateHandoff(payload, identity);
+    case "material.import":
+      return validateMaterialImport(payload);
     case "status.progress":
       return validateProgress(payload);
     case "status.error":

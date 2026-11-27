@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import struct
 import threading
@@ -13,6 +14,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
 
 import numpy as np
@@ -330,6 +332,105 @@ def test_cache_hit_is_bit_identical_to_fresh_build_and_does_not_rebuild(
         )
 
 
+def test_color_only_reader_streams_legacy_recipes_and_reuses_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materials = _materials()
+    key = _key(materials)
+    built = _catalog()
+    save_dynamic_candidate_catalog(
+        built, materials=materials, key=key, cache_root=tmp_path,
+        candidate_count_before_dedup=3,
+    )
+    with np.load(dynamic_catalog_cache_file_path(key, cache_root=tmp_path)) as archive:
+        npz_type = type(archive)
+    get_array = npz_type.__getitem__
+
+    def get_without_recipes(archive, name):
+        assert name != "print_recipes_canonical", "color analysis allocated the entire recipe table"
+        return get_array(archive, name)
+
+    monkeypatch.setattr(npz_type, "__getitem__", get_without_recipes)
+    hit = load_or_build_dynamic_candidate_catalog(
+        materials=materials, key=key, cache_root=tmp_path, colors_only=True,
+        builder=lambda: pytest.fail("a valid legacy catalog must remain a cache hit"),
+    )
+    assert hit.cache_hit
+    assert hit.candidate_count_before_dedup == 3
+    np.testing.assert_array_equal(hit.catalog.score_srgb, built.score_srgb)
+    np.testing.assert_array_equal(hit.catalog.score_lab, built.score_lab)
+    np.testing.assert_array_equal(hit.catalog.minimum_actual_layer_counts, built.minimum_actual_layer_counts)
+
+
+def test_color_reader_quarantines_invalid_recipe_in_later_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materials = _materials()
+    key = _key(materials)
+    built = _catalog()
+    path = save_dynamic_candidate_catalog(
+        built, materials=materials, key=key, cache_root=tmp_path,
+        candidate_count_before_dedup=3,
+    )
+    with np.load(path, allow_pickle=False) as archive:
+        payload = dict(archive)
+    # Fortran order was also supported by NumPy's existing NPZ reader.
+    payload["print_recipes_canonical"] = np.asfortranarray(payload["print_recipes_canonical"])
+    np.savez_compressed(path, **payload)
+    monkeypatch.setattr(catalog_cache, "_CATALOG_BLOCK_ROWS", 1, raising=False)
+    hit = load_or_build_dynamic_candidate_catalog(
+        materials=materials, key=key, cache_root=tmp_path, colors_only=True,
+        builder=lambda: pytest.fail("valid Fortran-order NPZ must remain readable"),
+    )
+    assert hit.cache_hit
+
+    payload["print_recipes_canonical"][-1, -1] = len(materials)
+    np.savez_compressed(path, **payload)
+    rebuilt = load_or_build_dynamic_candidate_catalog(
+        materials=materials, key=key, cache_root=tmp_path, colors_only=True,
+        builder=lambda: (built, 3),
+    )
+    assert rebuilt.rebuilt_corrupt and not rebuilt.cache_hit
+    assert list(path.parent.glob(f"{path.name}.corrupt-*"))
+    assert load_dynamic_candidate_catalog(materials=materials, key=key, cache_root=tmp_path) is not None
+
+
+def test_dynamic_build_reduces_prediction_blocks_in_source_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materials = _materials()
+    config = dynamic_solver.DynamicMaterialSolveConfig(5, 6, 0.0)
+    runtimes = {
+        5: _runtime(np.array([[0] * 5, [1] * 5, [0] * 5], dtype=np.uint8), 5),
+        6: _runtime(np.array([[0] * 6, [1] * 6, [0] * 6], dtype=np.uint8), 6),
+    }
+
+    def loader(_materials, layer_count, *_args):
+        return runtimes[layer_count], 8
+
+    forward = dynamic_solver.forward_batch_model
+    recipes = np.array([[0] * 6, [0] + [1] * 5, [0] * 6, [0] * 6, [1] * 6, [0] * 6])
+    from core.material_color_solver import linear_to_srgb_uint8
+
+    expected = build_dynamic_candidate_catalog(
+        linear_to_srgb_uint8(forward(recipes, materials, 0.08)),
+        recipes, np.array([5, 5, 5, 6, 6, 6]), 6,
+    )
+
+    def bounded_forward(block, *args):
+        assert len(block) <= 2, "prediction received an entire layer"
+        return forward(block, *args)
+
+    monkeypatch.setattr(dynamic_solver, "_CATALOG_BUILD_BLOCK_ROWS", 2, raising=False)
+    monkeypatch.setattr(dynamic_solver, "forward_batch_model", bounded_forward)
+    result, before_count, _layers = dynamic_solver._build_dynamic_candidate_catalog_from_runtimes(
+        materials, 0, 0.08, "white", config, loader,
+    )
+    assert before_count == len(recipes)
+    for field in vars(expected):
+        np.testing.assert_array_equal(getattr(result, field), getattr(expected, field))
+
+
 def test_cache_write_atomically_replaces_payload_and_descriptor_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -597,6 +698,13 @@ def test_production_solver_pins_candidate_budget_for_every_layer_and_skips_fixed
         return runtimes[layer_count], 8
 
     monkeypatch.setattr(dynamic_solver, "load_dynamic_candidate_runtime", dynamic_loader)
+    # Preparing the palette before an image is chosen must populate the exact
+    # catalog subsequently consumed by the first real preview.
+    dynamic_solver.prepare_dynamic_material_catalog(
+        materials, 0, 0.08, "white",
+        dynamic_solver.DynamicMaterialSolveConfig(5, 6, 0.5),
+        catalog_cache_root=tmp_path,
+    )
     monkeypatch.setattr(
         "core.material_lut_provider.load_solver_cache",
         lambda *_args, **_kwargs: pytest.fail("legacy fixed cache must not be queried"),
@@ -816,20 +924,99 @@ def test_concurrent_miss_builds_once_and_second_caller_hits(tmp_path: Path) -> N
         time.sleep(0.1)
         return _catalog(), 3
 
-    def invoke():
+    def invoke(colors_only):
         start.wait(timeout=2)
         return load_or_build_dynamic_candidate_catalog(
             materials=materials,
             key=key,
             builder=builder,
             cache_root=tmp_path,
+            colors_only=colors_only,
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(lambda _value: invoke(), range(2)))
+        colors, full = executor.map(invoke, (True, False))
 
     assert build_calls == 1
-    assert sorted(result.cache_hit for result in results) == [False, True]
+    assert {colors.cache_hit, full.cache_hit} == {False, True}
+    np.testing.assert_array_equal(colors.catalog.score_srgb, full.catalog.score_srgb)
+    np.testing.assert_array_equal(full.catalog.print_recipes, _catalog().print_recipes)
+
+
+def _hold_catalog_build(
+    cache_root: Path,
+    started: ProcessEvent | threading.Event,
+    release: ProcessEvent | threading.Event,
+) -> None:
+    materials = _materials()
+
+    def build() -> tuple[dynamic_solver.DynamicCandidateCatalog, int]:
+        started.set()
+        assert release.wait(15), "consumer did not release the builder"
+        return _catalog(), 3
+
+    result = load_or_build_dynamic_candidate_catalog(
+        materials=materials,
+        key=_key(materials),
+        builder=build,
+        cache_root=cache_root,
+    )
+    assert not result.cache_hit
+
+
+@pytest.mark.parametrize("separate_process", [False, True], ids=["thread", "process"])
+def test_waiting_consumer_reuses_a_slow_catalog_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, separate_process: bool,
+) -> None:
+    monkeypatch.setattr(catalog_cache, "_CACHE_LOCK_TIMEOUT_SECONDS", 0.1)
+    if separate_process:
+        context = multiprocessing.get_context("spawn")
+        started, release = context.Event(), context.Event()
+        owner = context.Process(target=_hold_catalog_build, args=(tmp_path, started, release))
+    else:
+        started, release = threading.Event(), threading.Event()
+        owner = threading.Thread(target=_hold_catalog_build, args=(tmp_path, started, release))
+
+    waiting = threading.Event()
+    enter = catalog_cache._DynamicCatalogKeyLock.__enter__
+
+    def observe_lock(lock):
+        if lock._lock_path.name.startswith("catalog-"):
+            waiting.set()
+        return enter(lock)
+
+    materials = _materials()
+    owner.start()
+    try:
+        assert started.wait(10)
+        monkeypatch.setattr(catalog_cache._DynamicCatalogKeyLock, "__enter__", observe_lock)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            preview = executor.submit(
+                load_or_build_dynamic_candidate_catalog,
+                materials=materials,
+                key=_key(materials),
+                builder=lambda: pytest.fail("the waiting consumer must reuse the first build"),
+                cache_root=tmp_path,
+            )
+            try:
+                assert waiting.wait(5)
+                with pytest.raises(TimeoutError):
+                    preview.result(timeout=0.4)
+            finally:
+                release.set()
+            result = preview.result(timeout=5)
+        assert result.cache_hit
+        np.testing.assert_array_equal(result.catalog.print_recipes, _catalog().print_recipes)
+    finally:
+        release.set()
+        owner.join(timeout=10)
+        if isinstance(owner, multiprocessing.process.BaseProcess):
+            if owner.is_alive():
+                owner.terminate()
+                owner.join(timeout=5)
+            assert owner.exitcode == 0
+        else:
+            assert not owner.is_alive()
 
 
 def test_blocked_build_does_not_block_another_catalog_cache_hit(tmp_path: Path) -> None:

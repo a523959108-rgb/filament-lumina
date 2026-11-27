@@ -5,10 +5,11 @@ import {
   isRpcEnvelopeShape,
   isWorkshopRpcMethod,
   responseEnvelope,
+  type HostWorkshopRpcMethod,
+  type WorkshopMaterialImportControl,
   type WorkshopModuleIdentity,
   type WorkshopPermissionName,
   type WorkshopRpcEventName,
-  type WorkshopRpcMethod,
   type WorkshopRpcResponse,
   type WorkshopUiState,
 } from "../contracts";
@@ -20,7 +21,7 @@ import {
   RpcPayloadValidationError,
   validateMethodPayload,
 } from "./payloadValidation";
-import type { WorkshopProjectChannel } from "./projectChannel";
+import { WorkshopProjectDisconnectedError, type WorkshopProjectChannel } from "./projectChannel";
 
 
 export {
@@ -31,12 +32,36 @@ export {
 const REQUEST_TIMEOUT_MS = 30_000;
 const IMAGE_PICK_TIMEOUT_MS = 300_000;
 const HANDOFF_TIMEOUT_MS = 120_000;
+/** Only the reversible confirmation/commit handshake has this deadline. */
+const MATERIAL_IMPORT_TIMEOUT_MS = 300_000;
 const TOKEN_REFILL_PER_SECOND = 30;
 const TOKEN_BURST_CAPACITY = 60;
+
+/**
+ * A handler failure with a stable, module-visible code. The message must be
+ * safe to show to the module: no paths, stacks, tokens, or project content.
+ * 可向模块公开的处理器错误；消息不得包含路径、堆栈、令牌或工程内容。
+ */
+export class WorkshopRpcHandlerError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(code: string, message: string, retryable = false) {
+    super(message);
+    this.name = "WorkshopRpcHandlerError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
+export const MATERIAL_IMPORT_OUTCOME_UNKNOWN_MESSAGE =
+  "The host could not confirm the material import outcome. Check the material library before trying again.";
 
 export interface WorkshopRpcHandlerContext {
   readonly identity: WorkshopModuleIdentity;
   readonly signal: AbortSignal;
+  /** After host confirmation, wait for the still-live SDK request to commit. */
+  readonly commitMaterialImport?: () => Promise<boolean>;
 }
 
 export type WorkshopRpcHandler = (
@@ -45,7 +70,7 @@ export type WorkshopRpcHandler = (
 ) => unknown | Promise<unknown>;
 
 export type WorkshopRpcHandlers = Partial<
-  Record<WorkshopRpcMethod, WorkshopRpcHandler>
+  Record<HostWorkshopRpcMethod, WorkshopRpcHandler>
 >;
 
 export interface WorkshopRpcScheduler {
@@ -56,6 +81,8 @@ export interface WorkshopRpcScheduler {
 export interface WorkshopMessagePort {
   onmessage: ((event: MessageEvent) => void) | null;
   onmessageerror: ((event: MessageEvent) => void) | null;
+  addEventListener?(type: "close", listener: () => void): void;
+  removeEventListener?(type: "close", listener: () => void): void;
   postMessage(message: unknown, transfer?: Transferable[]): void;
   start(): void;
   close(): void;
@@ -66,7 +93,10 @@ export interface CreateWorkshopRpcHostOptions {
   permissions: ReadonlySet<string>;
   handlers: WorkshopRpcHandlers;
   supportedEvents?: ReadonlySet<string>;
+  /** The exact module version declares a backend (manifest v2). */
+  backendEnabled?: boolean;
   projectChannel?: WorkshopProjectChannel;
+  onDisconnect?: () => void;
   now?: () => number;
   scheduler?: WorkshopRpcScheduler;
 }
@@ -77,6 +107,7 @@ export interface WorkshopRpcHost {
   dispatch(value: unknown): Promise<WorkshopRpcResponse>;
   emit(event: WorkshopRpcEventName, payload: WorkshopUiState): boolean;
   attach(port: WorkshopMessagePort): () => void;
+  disconnect(): void;
   close(): void;
 }
 
@@ -84,6 +115,10 @@ interface PendingRequest {
   controller: AbortController;
   timer: unknown;
   finish(response: WorkshopRpcResponse): void;
+  materialImport?: {
+    phase: "confirming" | "prepared" | "committed";
+    resolveCommit?: (committed: boolean) => void;
+  };
 }
 
 const DEFAULT_SCHEDULER: WorkshopRpcScheduler = {
@@ -188,11 +223,15 @@ class TokenBucket {
   }
 }
 
-function requestTimeout(method: WorkshopRpcMethod): number {
+function requestTimeout(method: HostWorkshopRpcMethod): number {
   switch (method) {
     case "image.pick":
       return IMAGE_PICK_TIMEOUT_MS;
+    case "material.import":
+      return MATERIAL_IMPORT_TIMEOUT_MS;
     case "handoff.image":
+    case "backend.submit":
+    case "backend.readOutput":
       return HANDOFF_TIMEOUT_MS;
     default:
       return REQUEST_TIMEOUT_MS;
@@ -205,12 +244,15 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
 
   private readonly handlers: WorkshopRpcHandlers;
   private readonly supportedEvents: ReadonlySet<string>;
+  private readonly backendEnabled: boolean;
   private readonly scheduler: WorkshopRpcScheduler;
   private readonly bucket: TokenBucket;
   private readonly pending = new Map<string, PendingRequest>();
   private activePort: WorkshopMessagePort | null = null;
+  private removePortCloseListener: (() => void) | null = null;
   private closed = false;
   private readonly projectChannel?: WorkshopProjectChannel;
+  private readonly onDisconnect?: () => void;
 
   constructor(options: CreateWorkshopRpcHostOptions) {
     this.identity = validatedIdentity(options.identity);
@@ -219,7 +261,9 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
     );
     this.handlers = Object.freeze({ ...options.handlers });
     this.supportedEvents = new Set(options.supportedEvents ?? []);
+    this.backendEnabled = options.backendEnabled === true;
     this.projectChannel = options.projectChannel;
+    this.onDisconnect = options.onDisconnect;
     this.scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
     this.bucket = new TokenBucket(options.now ?? defaultNow);
   }
@@ -273,6 +317,7 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
       !hasMethodPermission(
         this.permissions,
         value.method,
+        { backend: this.backendEnabled },
       )
     ) {
       return errorResponseEnvelope(
@@ -330,8 +375,22 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
       return () => undefined;
     }
     this.activePort = port;
-    this.projectChannel?.connect(port);
+    this.projectChannel?.connect((message) => {
+      if (this.activePort !== port) throw new WorkshopProjectDisconnectedError();
+      try {
+        port.postMessage(message);
+      } catch (error) {
+        // A serialization failure only affects this project request.
+        if (error && typeof error === "object" && "name" in error && error.name === "DataCloneError") {
+          throw error;
+        }
+        this.disconnect(port);
+        throw new WorkshopProjectDisconnectedError();
+      }
+    }, () => this.disconnect(port));
     port.onmessage = (event) => {
+      if (this.activePort !== port) return;
+      if (this.receiveMaterialImportControl(event.data)) return;
       if (this.projectChannel?.receive(event.data)) return;
       void this.dispatch(event.data).then((response) => {
         if (this.activePort !== port || this.closed) {
@@ -340,22 +399,22 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
         try {
           port.postMessage(response);
         } catch {
-          this.close();
+          this.disconnect(port);
         }
       });
     };
     port.onmessageerror = () => {
-      this.close();
+      this.disconnect(port);
     };
+    const handleClose = () => this.disconnect(port);
+    port.addEventListener?.("close", handleClose);
+    this.removePortCloseListener = () => port.removeEventListener?.("close", handleClose);
     port.start();
     return () => {
       if (this.activePort !== port) {
         return;
       }
-      port.onmessage = null;
-      port.onmessageerror = null;
-      port.close();
-      this.activePort = null;
+      this.detachPort();
       this.projectChannel?.close();
     };
   }
@@ -376,9 +435,94 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
       port.postMessage(eventEnvelope(event, payload));
       return true;
     } catch {
-      this.close();
+      this.disconnect(port);
       return false;
     }
+  }
+
+  disconnect(port = this.activePort): void {
+    if (this.closed || port === null || this.activePort !== port) return;
+    this.close();
+    this.onDisconnect?.();
+  }
+
+  private detachPort(): void {
+    const port = this.activePort;
+    this.activePort = null;
+    this.removePortCloseListener?.();
+    this.removePortCloseListener = null;
+    if (port === null) return;
+    port.onmessage = null;
+    port.onmessageerror = null;
+    port.close();
+  }
+
+  private receiveMaterialImportControl(value: unknown): boolean {
+    if (!value || typeof value !== "object" || !("kind" in value) || value.kind !== "control") {
+      return false;
+    }
+    // Invalid controls must not accidentally resolve a pending request as an
+    // invalid RPC response. Controls only act on this port's existing import.
+    const control = value as Partial<WorkshopMaterialImportControl>;
+    const keys = Object.keys(control);
+    if (
+      Array.isArray(control) ||
+      keys.length !== 5 ||
+      !keys.every((key) => ["protocol", "version", "kind", "requestId", "action"].includes(key)) ||
+      control.protocol !== "lumina-workshop-rpc" ||
+      control.version !== WORKSHOP_RPC_VERSION ||
+      typeof control.requestId !== "string" ||
+      (control.action !== "material-import-commit" && control.action !== "material-import-cancel")
+    ) return true;
+    const pending = this.pending.get(control.requestId);
+    const state = pending?.materialImport;
+    if (!pending || !state) return true;
+    if (control.action === "material-import-cancel") {
+      pending.controller.abort();
+      pending.finish(
+        state.phase === "committed"
+          ? errorResponseEnvelope(
+              control.requestId,
+              "material-import-outcome-unknown",
+              MATERIAL_IMPORT_OUTCOME_UNKNOWN_MESSAGE,
+            )
+          : responseEnvelope(control.requestId, { status: "cancelled" }),
+      );
+    } else if (state.phase === "prepared") {
+      state.phase = "committed";
+      this.scheduler.clear(pending.timer);
+      state.resolveCommit?.(true);
+      state.resolveCommit = undefined;
+    }
+    return true;
+  }
+
+  private prepareMaterialImport(requestId: string, pending: PendingRequest): Promise<boolean> {
+    const port = this.activePort;
+    const state = pending.materialImport;
+    if (
+      this.closed ||
+      port === null ||
+      pending.controller.signal.aborted ||
+      this.pending.get(requestId) !== pending ||
+      state?.phase !== "confirming"
+    ) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      state.phase = "prepared";
+      state.resolveCommit = resolve;
+      const prepared: WorkshopMaterialImportControl = {
+        protocol: "lumina-workshop-rpc",
+        version: WORKSHOP_RPC_VERSION,
+        kind: "control",
+        requestId,
+        action: "material-import-prepared",
+      };
+      try {
+        port.postMessage(prepared);
+      } catch {
+        this.disconnect(port);
+      }
+    });
   }
 
   close(): void {
@@ -387,30 +531,35 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
     }
     this.closed = true;
     this.projectChannel?.close();
-    const port = this.activePort;
-    this.activePort = null;
-    if (port !== null) {
-      port.onmessage = null;
-      port.onmessageerror = null;
-      port.close();
-    }
     for (const [requestId, pending] of [
       ...this.pending.entries(),
     ]) {
       pending.controller.abort();
-      pending.finish(
-        errorResponseEnvelope(
-          requestId,
-          "rpc-host-closed",
-          "The Workshop frame has been closed.",
-        ),
+      const response = errorResponseEnvelope(
+        requestId,
+        pending.materialImport?.phase === "committed"
+          ? "material-import-outcome-unknown"
+          : "rpc-host-closed",
+        pending.materialImport?.phase === "committed"
+          ? MATERIAL_IMPORT_OUTCOME_UNKNOWN_MESSAGE
+          : "The Workshop frame has been closed.",
       );
+      // Send the terminal result before closing. MessagePort close events
+      // are not available in every browser, and committed imports no longer
+      // have a confirmation deadline that could otherwise settle the SDK.
+      try {
+        this.activePort?.postMessage(response);
+      } catch {
+        // A disconnected port cannot receive a final response.
+      }
+      pending.finish(response);
     }
+    this.detachPort();
   }
 
   private runHandler(
     requestId: string,
-    method: WorkshopRpcMethod,
+    method: HostWorkshopRpcMethod,
     payload: unknown,
     handler: WorkshopRpcHandler,
   ): Promise<WorkshopRpcResponse> {
@@ -420,6 +569,7 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
       const pending: PendingRequest = {
         controller,
         timer: undefined,
+        materialImport: method === "material.import" ? { phase: "confirming" } : undefined,
         finish: (response) => {
           if (settled) {
             return;
@@ -427,11 +577,14 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
           settled = true;
           this.scheduler.clear(pending.timer);
           this.pending.delete(requestId);
+          pending.materialImport?.resolveCommit?.(false);
+          if (pending.materialImport) pending.materialImport.resolveCommit = undefined;
           resolve(response);
         },
       };
       this.pending.set(requestId, pending);
       pending.timer = this.scheduler.set(() => {
+        if (pending.materialImport?.phase === "committed") return;
         controller.abort();
         pending.finish(
           errorResponseEnvelope(
@@ -448,19 +601,29 @@ class WorkshopRpcHostImpl implements WorkshopRpcHost {
           handler(payload, {
             identity: this.identity,
             signal: controller.signal,
+            ...(method === "material.import"
+              ? { commitMaterialImport: () => this.prepareMaterialImport(requestId, pending) }
+              : {}),
           }),
         )
         .then(
           (result) => {
             pending.finish(responseEnvelope(requestId, result));
           },
-          () => {
+          (error: unknown) => {
             pending.finish(
-              errorResponseEnvelope(
-                requestId,
-                "rpc-handler-failed",
-                "The Workshop host could not complete the request.",
-              ),
+              error instanceof WorkshopRpcHandlerError
+                ? errorResponseEnvelope(
+                    requestId,
+                    error.code,
+                    error.message,
+                    error.retryable,
+                  )
+                : errorResponseEnvelope(
+                    requestId,
+                    "rpc-handler-failed",
+                    "The Workshop host could not complete the request.",
+                  ),
             );
           },
         );

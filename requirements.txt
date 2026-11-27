@@ -21,6 +21,7 @@ lumina-svg-core==0.3.4
 # Exact indexed triangulation for slicer-safe vector solids.
 manifold3d>=3.4.0
 # FastAPI backend dependencies
+packaging>=25.0
 fastapi
 uvicorn
 httpx
@@ -29,12 +30,14 @@ numba
 msgpack
 # Runtime resource-aware task parallelism
 psutil>=5.9.8
+# Creative Workshop module backends: private, hash-verified environments.
+uv==0.13.7
 # Vectorizer (C++ image-to-SVG)
 neroued-vectorizer>=0.1.1
 # 3MF writer (C++ streaming 3MF with Production Extension).
 # Official PyPI release includes Production layout and Windows native paths.
 neroued-3mf==0.4.2
 # Public SDK: https://github.com/MOVIBALE/fatcat-metadata
-# Required SDK source: c94c6344c2964c3d47229d8708e6c8f5a3b49961.
-# November slicer profiles, explicit plate head maps and nozzle-change layout facts.
-fatcat-metadata==0.1.5
+# Required SDK source: 31f21f14b945ca21528b4ece1313e6b01cdaa505.
+# Compatible native process/material selection and multi-tool heating defaults.
+fatcat-metadata==0.1.8

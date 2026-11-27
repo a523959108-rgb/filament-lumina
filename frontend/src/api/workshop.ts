@@ -1,6 +1,8 @@
-import type { WorkshopPermissionName } from "@lumina/workshop-sdk";
+import type { WorkshopPermissionName } from "../workshop/contracts";
+import axios, { type AxiosRequestConfig } from "axios";
 
 import apiClient from "./client";
+import { createRandomId } from "../utils/randomId";
 
 export interface WorkshopLocalizedText {
   zh_cn: string;
@@ -10,6 +12,26 @@ export interface WorkshopLocalizedText {
 export interface WorkshopPermission {
   name: WorkshopPermissionName;
   reason: string;
+  reason_i18n?: WorkshopLocalizedText | null;
+}
+
+export interface WorkshopBackendCapability {
+  name: string;
+  reason: string;
+  reason_i18n?: WorkshopLocalizedText | null;
+}
+
+export interface WorkshopBackendSummary {
+  python: string;
+  platforms: string[];
+  capabilities: WorkshopBackendCapability[];
+  model_count: number;
+  variants: Array<{
+    id: string;
+    name: WorkshopLocalizedText;
+    description: WorkshopLocalizedText;
+    platforms: string[];
+  }>;
 }
 
 export interface InstalledWorkshopVersion {
@@ -25,6 +47,9 @@ export interface InstalledWorkshopVersion {
   details_url: string;
   icon_url: string;
   asset_base_url: string;
+  /** 2 when the version declares a host-managed backend. */
+  manifest_version?: number;
+  backend?: WorkshopBackendSummary | null;
   project_snapshot_protocol?: number | null;
   project_snapshot_schemas?: string[];
 }
@@ -59,6 +84,7 @@ export interface WorkshopModules {
 
 export interface WorkshopCatalogVersion {
   version: string;
+  workshop_api_min?: string;
   state: "active" | "deprecated" | "blocked";
   permissions: WorkshopPermission[];
   revocation: {
@@ -93,9 +119,270 @@ export interface WorkshopModuleDetails {
   gallery_urls: string[];
 }
 
+export interface WorkshopUninstallReportItem {
+  kind: string;
+  label?: string;
+  bytes?: number;
+  count?: number;
+  users?: string[];
+  reason?: string;
+  will_retry?: boolean;
+}
+
+export interface WorkshopUninstallReport {
+  cleared: WorkshopUninstallReportItem[];
+  shared: WorkshopUninstallReportItem[];
+  retained: WorkshopUninstallReportItem[];
+  failed: WorkshopUninstallReportItem[];
+}
+
 export interface WorkshopMutation {
   status?: "ok";
   module: InstalledWorkshopModule | null;
+  uninstall_report?: WorkshopUninstallReport | null;
+}
+
+export interface WorkshopUninstallOptions {
+  deleteTaskData: boolean;
+  retainModels: boolean;
+}
+
+export type WorkshopReviewLevel = "official" | "reviewed" | "unreviewed";
+export type WorkshopDownloadCategory = "python" | "wheels" | "models" | "artifacts";
+export type WorkshopDownloadPreferences = Partial<Record<WorkshopDownloadCategory, string>>;
+
+export interface WorkshopDownloadRoute {
+  original: string;
+  sources: string[];
+  count: number;
+  bytes?: number;
+  unknown_size_count?: number;
+}
+
+export interface WorkshopDownloadFile {
+  id: string;
+  file_name: string;
+  bytes: number;
+  license: string;
+  shared: boolean;
+}
+
+export interface WorkshopDependencyEstimate {
+  environment_key: string;
+  environment_reused: boolean;
+  package_count: number;
+  shared_package_count: number;
+  new_download_bytes: number;
+  shared_bytes: number;
+  unknown_size_packages: number;
+}
+
+export interface WorkshopBackendRuntimeState {
+  state: "stopped" | "starting" | "ready" | "busy" | "stopping" | "failed";
+  pid: number | null;
+  version: string | null;
+  variant: string | null;
+  current_task_id: string | null;
+  queued: number;
+  last_failure: string | null;
+}
+
+export interface WorkshopBackendStatus {
+  module_id: string;
+  version: string;
+  platform: string | null;
+  platform_supported: boolean;
+  tool_available: boolean;
+  review_level: WorkshopReviewLevel;
+  blocked: boolean;
+  authorization: "granted" | "inherited" | "required";
+  requires_unreviewed_confirmation: boolean;
+  preparation: "unprepared" | "preparing" | "prepared" | "failed";
+  failure_code: string | null;
+  preparation_task_id: string | null;
+  python: string;
+  interpreter_download_bytes: number;
+  interpreter_disk_bytes: number;
+  capabilities: WorkshopBackendCapability[];
+  models: WorkshopDownloadFile[];
+  artifacts?: WorkshopDownloadFile[];
+  download_sources?: Partial<Record<WorkshopDownloadCategory, string[]>>;
+  download_plan?: Partial<Record<WorkshopDownloadCategory, WorkshopDownloadRoute[]>>;
+  download_preferences?: WorkshopDownloadPreferences;
+  download_estimate?: WorkshopDownloadEstimate;
+  dependencies: WorkshopDependencyEstimate | null;
+  variants: Array<{
+    id: string;
+    name: { "zh-CN": string; "en-US": string };
+    description: { "zh-CN": string; "en-US": string };
+    available: boolean;
+    prepared: boolean;
+    failure_code: string | null;
+    dependencies: WorkshopDependencyEstimate | null;
+  }>;
+  acceleration: string | null;
+  footprint: {
+    environment_new_bytes: number;
+    environment_shared_bytes: number;
+    model_new_bytes: number;
+    model_shared_bytes: number;
+    reused_environment: boolean;
+  } | null;
+  runtime: WorkshopBackendRuntimeState;
+}
+
+export interface WorkshopDownloadEstimate {
+  bytes: number;
+  incomplete: boolean;
+}
+
+export interface WorkshopDownloadProgress {
+  file_name: string;
+  source: string;
+  file_index: number;
+  file_count: number;
+  file_received_bytes?: number;
+  file_total_bytes?: number | null;
+  received_bytes: number;
+  total_bytes: number | null;
+  bytes_per_second: number | null;
+  eta_seconds: number | null;
+}
+
+export interface WorkshopArchiveInstallProgress {
+  phase: "resolving" | "uploading" | "downloading" | "verifying" | "installing";
+  download?: WorkshopDownloadProgress | null;
+}
+
+export type ArchiveProgressListener = (progress: WorkshopArchiveInstallProgress) => void;
+
+export interface WorkshopBackendProgress {
+  completed: number;
+  total: number;
+  phase: string;
+  downloaded_bytes?: number | null;
+  download?: WorkshopDownloadProgress | null;
+}
+
+export interface WorkshopBackendTaskResponse {
+  task_id: string;
+  module_id: string;
+  module_version: string;
+  kind: "operation" | "prepare";
+  operation: string;
+  status:
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
+  progress: WorkshopBackendProgress | null;
+  error: { code: string; message: string } | null;
+  inputs: Array<{ name: string; file_name: string; mime_type: string; size_bytes: number }>;
+  outputs: Array<{ name: string; file_name: string; mime_type: string; size_bytes: number }>;
+  variant: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** Why a backend request failed: HTTP status, stable code, or no response. */
+export interface WorkshopBackendFailure {
+  status: number | null;
+  code: string | null;
+  /** No response arrived: the local service is unreachable or timed out. */
+  unreachable: boolean;
+}
+
+export function workshopBackendFailure(error: unknown): WorkshopBackendFailure {
+  if (!axios.isAxiosError(error)) {
+    return { status: null, code: null, unreachable: false };
+  }
+  const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail;
+  const code =
+    typeof detail === "object" &&
+    detail !== null &&
+    typeof (detail as { code?: unknown }).code === "string"
+      ? (detail as { code: string }).code
+      : null;
+  return {
+    status: error.response?.status ?? null,
+    code,
+    unreachable: error.response === undefined,
+  };
+}
+
+export interface WorkshopBackendStorage {
+  environments: Array<{
+    key: string;
+    python: string;
+    packages: number;
+    exclusive_bytes: number;
+    logical_bytes: number;
+    users: string[];
+  }>;
+  interpreters: Array<{ key: string; python: string; managed: boolean }>;
+  shared_store: { objects: number; bytes: number };
+  wheel_cache?: { files: number; bytes: number };
+  /** Model views that are full copies (drive without hard links). */
+  model_copies?: { files: number; bytes: number };
+  models: Array<{ sha256: string; users: string[]; bytes?: number }>;
+  retained_models: Array<{
+    sha256: string;
+    file_name: string;
+    module_id: string;
+    size_bytes: number;
+    retained_at: string;
+  }>;
+  task_data: Array<{ module_id: string; task_count: number; bytes: number }>;
+  pending: Array<{ path: string; reason: string; since: string }>;
+  tool_available: boolean;
+}
+
+export interface WorkshopBackendTaskInput {
+  name: string;
+  fileName: string;
+  mimeType: string;
+  bytes: ArrayBuffer;
+}
+
+/** Host-owned backend task API. 宿主托管的后端任务接口。 */
+export interface WorkshopBackendApi {
+  status(moduleId: string, version: string): Promise<WorkshopBackendStatus>;
+  authorize(
+    moduleId: string,
+    version: string,
+    acknowledgeUnreviewed: boolean,
+  ): Promise<WorkshopBackendStatus>;
+  prepare(
+    moduleId: string, version: string, sources?: WorkshopDownloadPreferences,
+  ): Promise<WorkshopBackendTaskResponse>;
+  setAcceleration(
+    moduleId: string,
+    variant: string | null,
+  ): Promise<WorkshopBackendStatus>;
+  stop(moduleId: string): Promise<void>;
+  presence(moduleId: string): Promise<void>;
+  submit(
+    moduleId: string,
+    version: string,
+    request: {
+      operation: string;
+      params: Record<string, unknown>;
+      inputs: WorkshopBackendTaskInput[];
+      idempotencyKey?: string;
+    },
+  ): Promise<WorkshopBackendTaskResponse>;
+  task(moduleId: string, taskId: string): Promise<WorkshopBackendTaskResponse>;
+  tasks(moduleId: string): Promise<WorkshopBackendTaskResponse[]>;
+  cancel(moduleId: string, taskId: string): Promise<WorkshopBackendTaskResponse>;
+  remove(moduleId: string, taskId: string): Promise<void>;
+  output(moduleId: string, taskId: string, name: string): Promise<ArrayBuffer>;
+  storage(): Promise<WorkshopBackendStorage>;
+  deleteRetainedModel(sha256: string): Promise<void>;
+  deleteTaskData(moduleId: string): Promise<void>;
 }
 
 export interface WorkshopManagerApi {
@@ -105,12 +392,14 @@ export interface WorkshopManagerApi {
   installRegistry(
     moduleId: string,
     version: string,
+    onProgress?: ArchiveProgressListener,
   ): Promise<WorkshopMutation>;
   installGithub(
     repositoryUrl: string,
     version: string,
+    onProgress?: ArchiveProgressListener,
   ): Promise<WorkshopMutation>;
-  installLocal(file: File): Promise<WorkshopMutation>;
+  installLocal(file: File, onProgress?: ArchiveProgressListener): Promise<WorkshopMutation>;
   activateModule(
     moduleId: string,
     version: string,
@@ -123,6 +412,7 @@ export interface WorkshopManagerApi {
   uninstallModule(
     moduleId: string,
     deleteProjects: boolean,
+    options?: WorkshopUninstallOptions,
   ): Promise<WorkshopMutation>;
   restoreOfficialSeed(moduleId: string): Promise<WorkshopMutation>;
   recordRuntimeSuccess(moduleId: string): Promise<WorkshopMutation>;
@@ -130,6 +420,61 @@ export interface WorkshopManagerApi {
 }
 
 const MUTATION_TIMEOUT_MS = 3_600_000;
+
+async function installArchive(
+  kind: "registry" | "github" | "local",
+  payload: unknown,
+  onProgress?: ArchiveProgressListener,
+  localFileName?: string,
+): Promise<WorkshopMutation> {
+  const endpoint = `/workshop/v1/install/${kind}`;
+  const options: AxiosRequestConfig = kind === "registry"
+    ? { timeout: MUTATION_TIMEOUT_MS, suppressErrorTicket: true }
+    : { timeout: MUTATION_TIMEOUT_MS };
+  if (!onProgress) {
+    return (await apiClient.post<WorkshopMutation>(endpoint, payload, options)).data;
+  }
+  let stopped = false;
+  let hasServerProgress = false;
+  if (localFileName !== undefined) {
+    options.onUploadProgress = ({ loaded, total, rate, estimated }) => {
+      if (stopped || hasServerProgress) return;
+      onProgress({
+        phase: "uploading",
+        download: {
+          file_name: localFileName, source: "local", file_index: 1, file_count: 1,
+          received_bytes: loaded, total_bytes: total ?? null,
+          bytes_per_second: rate ?? null, eta_seconds: estimated == null ? null : Math.ceil(estimated),
+        },
+      });
+    };
+  }
+  const id = createRandomId();
+  let timer: ReturnType<typeof setTimeout>;
+  const poll = async () => {
+    try {
+      const { data } = await apiClient.get<WorkshopArchiveInstallProgress | null>(
+        `/workshop/v1/install/progress/${id}`, { suppressErrorTicket: true },
+      );
+      if (!stopped && data) {
+        hasServerProgress = true;
+        onProgress(data);
+      }
+    } catch {
+      // A progress request can fail without changing the install request.
+    }
+    if (!stopped) timer = setTimeout(() => void poll(), 500);
+  };
+  timer = setTimeout(() => void poll(), 300);
+  try {
+    return (await apiClient.post<WorkshopMutation>(endpoint, payload, {
+      ...options, params: { progress_id: id },
+    })).data;
+  } finally {
+    stopped = true;
+    clearTimeout(timer);
+  }
+}
 
 function encoded(value: string): string {
   return encodeURIComponent(value);
@@ -165,33 +510,18 @@ export const workshopApi: WorkshopManagerApi = {
     return response.data;
   },
 
-  async installRegistry(moduleId, version) {
-    const response = await apiClient.post<WorkshopMutation>(
-      "/workshop/v1/install/registry",
-      { module_id: moduleId, version },
-      { timeout: MUTATION_TIMEOUT_MS },
-    );
-    return response.data;
+  installRegistry(moduleId, version, onProgress) {
+    return installArchive("registry", { module_id: moduleId, version }, onProgress);
   },
 
-  async installGithub(repositoryUrl, version) {
-    const response = await apiClient.post<WorkshopMutation>(
-      "/workshop/v1/install/github",
-      { repository_url: repositoryUrl, version },
-      { timeout: MUTATION_TIMEOUT_MS },
-    );
-    return response.data;
+  installGithub(repositoryUrl, version, onProgress) {
+    return installArchive("github", { repository_url: repositoryUrl, version }, onProgress);
   },
 
-  async installLocal(file) {
+  installLocal(file, onProgress) {
     const payload = new FormData();
     payload.append("archive", file, file.name);
-    const response = await apiClient.post<WorkshopMutation>(
-      "/workshop/v1/install/local",
-      payload,
-      { timeout: MUTATION_TIMEOUT_MS },
-    );
-    return response.data;
+    return installArchive("local", payload, onProgress, file.name);
   },
 
   async activateModule(moduleId, version) {
@@ -218,10 +548,21 @@ export const workshopApi: WorkshopManagerApi = {
     return response.data;
   },
 
-  async uninstallModule(moduleId, deleteProjects) {
+  async uninstallModule(moduleId, deleteProjects, options) {
     const response = await apiClient.delete<WorkshopMutation>(
       `/workshop/v1/modules/${encoded(moduleId)}`,
-      { data: { delete_projects: deleteProjects } },
+      {
+        data: {
+          delete_projects: deleteProjects,
+          ...(options === undefined
+            ? {}
+            : {
+                delete_task_data: options.deleteTaskData,
+                retain_models: options.retainModels,
+              }),
+        },
+        timeout: MUTATION_TIMEOUT_MS,
+      },
     );
     return response.data;
   },
@@ -249,5 +590,138 @@ export const workshopApi: WorkshopManagerApi = {
       {},
     );
     return response.data;
+  },
+};
+
+const BACKEND_TRANSFER_TIMEOUT_MS = 120_000;
+
+function backendVersionPath(moduleId: string, version: string): string {
+  return `/workshop/v1/modules/${encoded(moduleId)}/${encoded(version)}/backend`;
+}
+
+function backendTasksPath(moduleId: string): string {
+  return `/workshop/v1/modules/${encoded(moduleId)}/backend/tasks`;
+}
+
+export const workshopBackendApi: WorkshopBackendApi = {
+  async status(moduleId, version) {
+    const response = await apiClient.get<WorkshopBackendStatus>(
+      backendVersionPath(moduleId, version),
+    );
+    return response.data;
+  },
+
+  async authorize(moduleId, version, acknowledgeUnreviewed) {
+    const response = await apiClient.post<WorkshopBackendStatus>(
+      `${backendVersionPath(moduleId, version)}/authorize`,
+      { acknowledge_unreviewed: acknowledgeUnreviewed },
+    );
+    return response.data;
+  },
+
+  async prepare(moduleId, version, sources) {
+    const response = await apiClient.post<WorkshopBackendTaskResponse>(
+      `${backendVersionPath(moduleId, version)}/prepare`,
+      sources ? { sources } : {},
+    );
+    return response.data;
+  },
+
+  async setAcceleration(moduleId, variant) {
+    const response = await apiClient.put<WorkshopBackendStatus>(
+      `/workshop/v1/modules/${encoded(moduleId)}/backend/acceleration`,
+      { variant },
+    );
+    return response.data;
+  },
+
+  async stop(moduleId) {
+    await apiClient.post(`/workshop/v1/modules/${encoded(moduleId)}/backend/stop`, {});
+  },
+
+  async presence(moduleId) {
+    await apiClient.post(`/workshop/v1/modules/${encoded(moduleId)}/backend/presence`, {});
+  },
+
+  async submit(moduleId, version, request) {
+    const form = new FormData();
+    form.append("version", version);
+    form.append("operation", request.operation);
+    form.append("params", JSON.stringify(request.params));
+    form.append(
+      "inputs_meta",
+      JSON.stringify(
+        request.inputs.map((input) => ({
+          name: input.name,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+        })),
+      ),
+    );
+    if (request.idempotencyKey !== undefined) {
+      form.append("idempotency_key", request.idempotencyKey);
+    }
+    for (const input of request.inputs) {
+      form.append(
+        "files",
+        new Blob([input.bytes], { type: input.mimeType }),
+        input.fileName,
+      );
+    }
+    const response = await apiClient.post<WorkshopBackendTaskResponse>(
+      backendTasksPath(moduleId),
+      form,
+      { timeout: BACKEND_TRANSFER_TIMEOUT_MS },
+    );
+    return response.data;
+  },
+
+  async task(moduleId, taskId) {
+    const response = await apiClient.get<WorkshopBackendTaskResponse>(
+      `${backendTasksPath(moduleId)}/${encoded(taskId)}`,
+    );
+    return response.data;
+  },
+
+  async tasks(moduleId) {
+    const response = await apiClient.get<{ tasks: WorkshopBackendTaskResponse[] }>(
+      backendTasksPath(moduleId),
+    );
+    return response.data.tasks;
+  },
+
+  async cancel(moduleId, taskId) {
+    const response = await apiClient.post<WorkshopBackendTaskResponse>(
+      `${backendTasksPath(moduleId)}/${encoded(taskId)}/cancel`,
+      {},
+    );
+    return response.data;
+  },
+
+  async remove(moduleId, taskId) {
+    await apiClient.delete(`${backendTasksPath(moduleId)}/${encoded(taskId)}`);
+  },
+
+  async output(moduleId, taskId, name) {
+    const response = await apiClient.get<ArrayBuffer>(
+      `${backendTasksPath(moduleId)}/${encoded(taskId)}/outputs/${encoded(name)}`,
+      { responseType: "arraybuffer", timeout: BACKEND_TRANSFER_TIMEOUT_MS },
+    );
+    return response.data;
+  },
+
+  async storage() {
+    const response = await apiClient.get<WorkshopBackendStorage>(
+      "/workshop/v1/backend/storage",
+    );
+    return response.data;
+  },
+
+  async deleteRetainedModel(sha256) {
+    await apiClient.delete(`/workshop/v1/backend/storage/models/${encoded(sha256)}`);
+  },
+
+  async deleteTaskData(moduleId) {
+    await apiClient.delete(`/workshop/v1/backend/storage/tasks/${encoded(moduleId)}`);
   },
 };

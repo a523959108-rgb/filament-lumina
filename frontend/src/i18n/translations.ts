@@ -7,11 +7,419 @@ import splashTranslations from '../../../electron/splash-text.json';
 import { projectTranslations } from './projects';
 export const translations: Record<string, Record<"zh" | "en", string>> = {
   ...splashTranslations,
-  ...projectTranslations,
+  common_loading: { zh: "正在加载…", en: "Loading…" },
+  resources_materials: { zh: "耗材档案", en: "Material profiles" },
+  resource_feedback_open: { zh: "反馈", en: "Feedback" },
+  resource_feedback_title: { zh: "资源反馈", en: "Resource feedback" },
+  resource_feedback_contributor: { zh: "投稿者", en: "Contributor" },
+  resource_feedback_identity: { zh: "账号编号", en: "Account ID" },
+  resource_feedback_legacy: { zh: "暂无投稿者信息", en: "Contributor unknown" },
+  resource_feedback_target: { zh: "资源版本", en: "Resource version" },
+  resource_feedback_meta_toggle: { zh: "编号与版本信息", en: "IDs & version" },
+  resource_feedback_reply_label: { zh: "处理回复", en: "Maintainer reply" },
+  resource_feedback_category: { zh: "问题类型", en: "Issue type" },
+  resource_feedback_category_attribution: { zh: "来源或署名有误", en: "Source or attribution" },
+  resource_feedback_category_incorrect_data: { zh: "校准数据或参数有误", en: "Calibration or specs" },
+  resource_feedback_category_unsafe_link: { zh: "购买链接失效或有误", en: "Broken or wrong link" },
+  resource_feedback_category_other: { zh: "其他问题", en: "Other" },
+  resource_feedback_message: { zh: "问题描述", en: "Description" },
+  resource_feedback_message_placeholder: { zh: "请说明具体问题，方便核对处理…", en: "Describe what needs attention…" },
+  resource_feedback_min_length: { zh: "至少 10 字", en: "Min 10 chars" },
+  resource_feedback_evidence: { zh: "参考链接（选填）", en: "Reference URL (optional)" },
+  resource_feedback_supplements: { zh: "补充资料（选填）", en: "Attachments & links (optional)" },
+  resource_feedback_details: { zh: "查看附件与链接", en: "Attachments & links" },
+  resource_feedback_add_image: { zh: "添加截图", en: "Add screenshots" },
+  resource_feedback_image_hint: { zh: "支持直接粘贴或拖入，最多 3 张", en: "Paste or drop up to 3 images" },
+  resource_feedback_remove_image: { zh: "移除截图", en: "Remove screenshot" },
+  resource_feedback_image_number: { zh: "截图 {number}", en: "Screenshot {number}" },
+  resource_feedback_image_limit: { zh: "最多添加 3 张截图。", en: "Up to 3 screenshots allowed." },
+  resource_feedback_image_format: { zh: "请选择 JPG、PNG 或 WebP 图片。", en: "Choose a JPG, PNG, or WebP image." },
+  resource_feedback_image_large: { zh: "图片过大，请换一张较小的图片。", en: "Image is too large. Choose a smaller file." },
+  resource_feedback_image_failed: { zh: "图片读取失败，请更换其他图片。", en: "Failed to process image. Try another file." },
+  resource_feedback_image_load_failed: { zh: "截图加载失败，请重试。", en: "Failed to load screenshots. Please retry." },
+  resource_feedback_image_upload_failed: { zh: "截图上传失败，可移除截图后仅提交文字。", en: "Screenshot upload failed. Remove images to submit text only." },
+  resource_feedback_view_link: { zh: "打开参考链接", en: "Open reference link" },
+  resource_feedback_save_image: { zh: "保存原图", en: "Save image" },
+  resource_feedback_url_example: { zh: "https://example.com/page", en: "https://example.com/page" },
+  resource_feedback_submit: { zh: "提交反馈", en: "Submit feedback" },
+  resource_feedback_verify: { zh: "登录后可查看反馈记录", en: "Sign in to view your feedback" },
+  resource_feedback_verify_email: { zh: "提交反馈前请先验证邮箱", en: "Verify your email to submit feedback" },
+  community_verify_email: { zh: "验证邮箱", en: "Verify email" },
+  community_verification_check: { zh: "刷新验证状态", en: "Recheck status" },
+  resource_feedback_load_failed: { zh: "加载失败，请重试。", en: "Failed to load. Please retry." },
+  resource_feedback_submit_failed: { zh: "提交失败，请重试。", en: "Submission failed. Please retry." },
+  resource_feedback_receipts: { zh: "我的反馈记录", en: "My feedback" },
+  resource_feedback_empty: { zh: "暂无反馈记录", en: "No feedback submitted yet" },
+  resource_feedback_more: { zh: "加载更多", en: "Load more" },
+  resource_feedback_receipt: { zh: "单号", en: "ID" },
+  resource_feedback_status_open: { zh: "待处理", en: "Pending" },
+  resource_feedback_status_resolved: { zh: "已处理", en: "Resolved" },
+  resource_feedback_status_dismissed: { zh: "已回复", en: "Replied" },
+  resources_luts: { zh: "LUT", en: "LUTs" },
+  resources_mirror_catalog: { zh: "镜像目录", en: "Mirror catalog" },
+  resources_source_settings: { zh: "来源设置", en: "Source settings" },
+  resources_source_check: { zh: "测试连接", en: "Test connection" },
+  resources_source_check_failed: { zh: "连接失败，请重试或切换其他来源。", en: "Connection failed. Retry or switch sources." },
+  resources_source_default: { zh: "默认线路", en: "Default source" },
+  resources_source_default_registry: { zh: "耗材服务器（默认）", en: "Registry server (default)" },
+  resources_source_default_github: { zh: "GitHub（默认）", en: "GitHub (default)" },
+  resources_source_default_disabled: { zh: "停用云端目录（默认）", en: "Cloud catalog disabled (default)" },
+  resources_source_custom: { zh: "自定义镜像", en: "Custom mirror" },
+  resources_source_address: { zh: "镜像地址", en: "Mirror URL" },
+  resources_source_example: { zh: "https://example.com/public/v1", en: "https://example.com/public/v1" },
+  resources_source_current: { zh: "当前线路", en: "Active source" },
+  resources_source_addresses: { zh: "查看实际接口地址", en: "View endpoint URLs" },
+  resources_source_apply: { zh: "应用来源", en: "Apply source" },
+  resources_source_saved: { zh: "已保存", en: "Saved" },
+  resources_source_save_failed: { zh: "保存失败，请重试。", en: "Failed to save. Please retry." },
+  resources_source_invalid_settings: { zh: "来源配置异常，已切回默认线路。", en: "Invalid source config; reverted to default." },
+  resources_source_state_ready: { zh: "连接正常", en: "Connected" },
+  resources_source_state_cached: { zh: "当前显示本地缓存，下载需联网", en: "Using local cache; internet needed for downloads" },
+  resources_source_state_error: { zh: "连接失败，可重试或切换来源", en: "Connection failed; retry or switch sources" },
+  resources_source_loading: { zh: "正在检测…", en: "Checking…" },
+  resources_source_unchecked: { zh: "待检测", en: "Not checked yet" },
+  resources_source_checked_at: { zh: "上次同步", en: "Last synced" },
+  resources_source_unconfigured: { zh: "未配置", en: "Not configured" },
+  resources_source_disabled_catalog: { zh: "云端目录未启用", en: "Cloud catalog disabled" },
+  resources_source_pending_apply: { zh: "已修改来源，点击「应用来源」后生效。", en: "Source changed — click Apply source to switch." },
+  resources_source_disabled_hint: { zh: "当前默认停用云端目录，可切换为 GitHub 目录或自定义镜像。", en: "Cloud catalog is disabled by default. Switch to GitHub catalog or a custom mirror." },
+  community_account: { zh: "社区账号", en: "Community account" },
+  community_disconnected: { zh: "未连接", en: "Not connected" },
+  community_connected: { zh: "已连接社区账号", en: "Community account connected" },
+  community_login_details: { zh: "登录信息", en: "Session info" },
+  community_remembered: { zh: "已记住账号，下次自动登录。", en: "Remembered on this device." },
+  community_session_only: { zh: "重启软件后需要重新登录。", en: "Valid until Studio restarts." },
+  community_web_account: { zh: "管理邮箱与设备", en: "Account & devices" },
+  community_disconnect_incomplete: { zh: "本机已断开，如需彻底撤销请前往网页端移除设备。", en: "Disconnected locally. Remove this device on the web to revoke access." },
+  contribution_device_hint: { zh: "连接码 10 分钟内有效；闲置超过 90 天或满一年需重新授权。", en: "Code valid for 10 minutes. Re-authorize after 90 days idle or 1 year." },
+  community_manage: { zh: "管理连接", en: "Manage" },
+  community_unavailable: { zh: "当前环境未开启社区账号服务。", en: "Community account service is unavailable." },
+  community_failed: { zh: "社区服务暂不可用，请稍后重试。", en: "Community service unavailable. Please retry." },
+  community_err_invalid_url: { zh: "社区服务器地址无效，请检查来源设置。", en: "Invalid community server URL. Check source settings." },
+  community_err_invalid_credentials: { zh: "服务器返回的设备授权信息无效，请重新连接。", en: "Invalid device credentials returned by server. Please reconnect." },
+  community_err_unconfigured: { zh: "当前未配置社区服务器。", en: "Community server is not configured." },
+  community_err_archive_too_large: { zh: "资源包大小超出投稿上限。", en: "Resource archive exceeds the submission size limit." },
+  community_err_unreachable: { zh: "无法连接耗材服务器，请检查网络或代理设置后重试。", en: "Could not reach the material server. Check your connection and retry." },
+  community_err_reconnect: { zh: "账号授权已失效，请重新连接社区账号后再试。", en: "Account session expired. Reconnect your community account and try again." },
+  community_err_server_outdated: { zh: "当前资源服务器尚未开启社区功能。", en: "This resource server does not support Studio community features yet." },
+  community_err_request_failed: { zh: "无法完成耗材服务器请求，请检查网络或代理设置后重试。", en: "The material server could not complete the request. Check your network or proxy and retry." },
+  community_err_invalid_response: { zh: "社区服务器响应格式异常，请稍后重试。", en: "Invalid response from community server. Please retry." },
+  community_err_connect_first: { zh: "请先连接社区账号。", en: "Connect your community account first." },
+  community_err_local_access: { zh: "请从本机地址（localhost 或 127.0.0.1）打开 Studio，刷新后重试。", en: "Open Studio at its local address (localhost or 127.0.0.1), reload, and try again." },
+  community_err_wrong_account_form: { zh: "当前连接的不是原投稿账号，请切回原账号后重新打开。", en: "Switch back to the original submitting account and reopen the form." },
+  community_err_not_owner: { zh: "该版本不属于当前连接的账号。", en: "This revision does not belong to the connected account." },
+  community_err_snapshot_failed: { zh: "公开互动统计加载失败，请稍后重试。", en: "Could not load public activity stats. Please retry." },
+  community_err_activity_failed: { zh: "账号互动记录加载失败，请稍后重试。", en: "Could not load account activity. Please retry." },
+  community_err_account_changed: { zh: "当前连接的账号已变更，请重试。", en: "Connected account changed. Please try again." },
+  community_err_account_changed_report: { zh: "当前连接的账号已变更，请重新打开反馈窗口。", en: "Connected account changed. Please reopen the feedback dialog." },
+  community_err_account_changed_form: { zh: "当前连接的账号已变更，请重新打开表单并确认署名。", en: "Connected account changed. Reopen the form and confirm attribution." },
+  community_err_revise_first: { zh: "请先修改内容后再重新提交审核。", en: "Update the submission details before resubmitting for review." },
+  community_resource_unavailable: { zh: "该资源暂不支持点赞与收藏。", en: "Likes and saves unavailable for this item." },
+  community_download_sync_failed: { zh: "已下载到本地，账号记录稍后同步。", en: "Downloaded locally; account history will sync later." },
+  community_like: { zh: "点赞", en: "Like" },
+  community_unlike: { zh: "取消点赞", en: "Unlike" },
+  community_save: { zh: "收藏到账号", en: "Save to account" },
+  community_unsave: { zh: "取消账号收藏", en: "Unsave from account" },
+  community_downloaders: { zh: "下载人数", en: "Downloads" },
+  community_download_count_hint: { zh: "按账号去重统计，重复下载不累加。", en: "Unique signed-in users; repeat downloads count once." },
+  community_filter: { zh: "账号资源筛选", en: "Account filter" },
+  community_filter_all: { zh: "全部资源", en: "All resources" },
+  community_filter_liked: { zh: "我的点赞", en: "My likes" },
+  community_filter_saved: { zh: "我的收藏", en: "My saved" },
+  community_filter_downloaded: { zh: "我的下载", en: "My downloads" },
+  community_local_common: { zh: "本机常用", en: "Pinned locally" },
+  community_local_pin: { zh: "设为本机常用", en: "Pin locally" },
+  community_local_unpin: { zh: "取消本机常用", en: "Unpin locally" },
+  community_local_hint: { zh: "仅保存在当前电脑，不随账号同步。", en: "Stored on this device only." },
+  community_saved_browse: { zh: "从云端收藏中挑选", en: "Browse cloud saved" },
+  contribution_open: { zh: "贡献到公共库", en: "Share to public library" },
+  contribution_history: { zh: "我的投稿", en: "My submissions" },
+  contribution_history_section: { zh: "投稿记录", en: "Submissions" },
+  contribution_regional_names: { zh: "分地区商品名（选填）", en: "Regional names (optional)" },
+  contribution_name_cn: { zh: "国内商品名", en: "China product name" },
+  contribution_name_intl: { zh: "海外商品名", en: "International name" },
+  contribution_add_link: { zh: "添加购买链接", en: "Add purchase link" },
+  contribution_remove_link: { zh: "删除", en: "Remove" },
+  contribution_link_item: { zh: "链接 {number}", en: "Link {number}" },
+  contribution_link_label: { zh: "渠道备注（选填，如官方旗舰店）", en: "Store label (optional)" },
+  contribution_edit_revision: { zh: "修改资料", en: "Edit details" },
+  contribution_revision_hint: { zh: "审核通过后将更新线上公开信息。", en: "Public listing updates once approved." },
+  contribution_withdraw: { zh: "撤回审核", en: "Withdraw" },
+  contribution_withdraw_hint: { zh: "撤回后可重新编辑或再次提交审核。", en: "Withdraw to edit or resubmit later." },
+  contribution_withdraw_confirm: { zh: "确认撤回", en: "Confirm withdraw" },
+  contribution_resubmit: { zh: "重新提交", en: "Resubmit" },
+  contribution_status_withdrawn: { zh: "已撤回", en: "Withdrawn" },
+  contribution_update_existing: { zh: "更新已发布的同名投稿（选填）", en: "Update an existing submission (optional)" },
+  contribution_update_target: { zh: "选择原投稿", en: "Target submission" },
+  contribution_new_resource: { zh: "作为新资源发布", en: "Publish as new resource" },
+  contribution_update_hint: { zh: "关联同一组耗材的既有投稿后，原点赞与收藏数会保留。", en: "Link an existing submission for the same filaments to keep its likes and saves." },
+  contribution_attribution: { zh: "公开署名", en: "Attribution" },
+  contribution_connect: { zh: "连接社区账号", en: "Connect account" },
+  contribution_disconnect: { zh: "断开连接", en: "Disconnect" },
+  contribution_account_hint: { zh: "与耗材库网页共用账号与投稿记录。", en: "Shares account and submissions with the web library." },
+  contribution_unavailable: { zh: "当前未配置投稿服务，本地资源仍可正常使用。", en: "Submission service not configured; local files work normally." },
+  contribution_code: { zh: "授权连接码", en: "Verification code" },
+  contribution_browser: { zh: "打开耗材库", en: "Open web library" },
+  contribution_browser_error: {
+    zh: "无法打开系统浏览器。请检查默认浏览器设置后重试。",
+    en: "Could not open the system browser. Check your default browser settings and try again.",
+  },
+  contribution_approve_hint: { zh: "前往耗材库网页登录，核对下方连接码并确认授权。", en: "Sign in on the web library, verify the code below, and approve." },
+  contribution_waiting: { zh: "等待网页确认，授权后将自动连接…", en: "Waiting for web approval…" },
+  contribution_restart: { zh: "重新连接", en: "New code" },
+  contribution_connection_lifetime: { zh: "有效期说明", en: "Session duration" },
+  contribution_custom_value: { zh: "未收录？可直接输入新名称", en: "Not listed? Type a custom name" },
+  contribution_check: { zh: "检查连接", en: "Check status" },
+  contribution_session_hint: { zh: "连接码 10 分钟内有效；当前会话最长保持 12 小时，重启后需重新登录。", en: "Code expires in 10 minutes. Session lasts up to 12 hours or until restart." },
+  contribution_name: { zh: "显示名称", en: "Display name" },
+  contribution_sku: { zh: "官方货号 / SKU", en: "SKU / Part No." },
+  contribution_size: { zh: "{size} KB", en: "{size} KB" },
+  contribution_layer_height: { zh: "层高 {height} mm", en: "Layer height {height} mm" },
+  contribution_product_link: { zh: "购买链接（选填）", en: "Purchase links (optional)" },
+  contribution_market: { zh: "适用地区", en: "Region" },
+  contribution_market_all: { zh: "通用", en: "Global" },
+  contribution_market_cn: { zh: "中国大陆", en: "Mainland China" },
+  contribution_market_intl: { zh: "海外市场", en: "International" },
+  contribution_use_profile: { zh: "快捷带入本地耗材档案", en: "Prefill from local profile" },
+  contribution_manual: { zh: "手动填写", en: "Enter manually" },
+  contribution_consent: { zh: "确认来源与署名属实，并已获得公开分享这些数据的许可", en: "I confirm the attribution and have permission to share this data publicly" },
+  contribution_original_consent: { zh: "确认来源与署名属实，我同意按 Lumina 数据协议 1.0 公开这份原创数据", en: "I confirm the attribution and agree to publish this original data under Lumina Data License 1.0" },
+  resources_license: { zh: "使用许可", en: "Usage license" },
+  resources_data_license: { zh: "投稿数据协议说明", en: "Contribution data terms" },
+  resources_lumina_license: { zh: "Lumina 数据使用协议 1.0", en: "Lumina Data License 1.0" },
+  resources_license_unspecified: { zh: "未标注", en: "Not specified" },
+  contribution_origin: { zh: "数据来源", en: "Data source" },
+  contribution_auto_title: { zh: "自动贡献新校准", en: "Auto-share new calibrations" },
+  contribution_auto_on: { zh: "已开启", en: "On" },
+  contribution_auto_off: { zh: "未开启", en: "Off" },
+  contribution_auto_scope: { zh: "保存新校准后自动加入上传队列；资料不全时会提醒补齐。", en: "Queue new calibrations automatically; prompts if details are incomplete." },
+  contribution_auto_verify: { zh: "连接账号并完成邮箱验证后可开启。", en: "Connect an account with a verified email to enable." },
+  contribution_auto_consent: { zh: "同意按数据协议自动分享今后的本人校准：允许接单打印，禁止售卖数据", en: "Auto-share my future calibrations: paid printing allowed; selling the data prohibited" },
+  contribution_auto_enable: { zh: "开启自动贡献", en: "Enable auto-share" },
+  contribution_auto_disable: { zh: "关闭自动贡献", en: "Disable auto-share" },
+  contribution_queue_title: { zh: "待上传队列", en: "Upload queue" },
+  contribution_queue_queued: { zh: "等待上传", en: "Queued" },
+  contribution_queue_sending: { zh: "正在上传", en: "Uploading" },
+  contribution_queue_needs_review: { zh: "待补全信息", en: "Needs info" },
+  contribution_queue_paused: { zh: "已暂停", en: "Paused" },
+  contribution_queue_other_account: { zh: "需切回原提交账号处理", en: "Switch back to the submitting account" },
+  contribution_queue_review: { zh: "补全资料", en: "Complete info" },
+  contribution_queue_pause: { zh: "暂停", en: "Pause" },
+  contribution_queue_retry: { zh: "继续上传", en: "Resume" },
+  contribution_queue_cancel: { zh: "移除", en: "Remove" },
+  contribution_queue_confirmed: { zh: "已加入上传队列", en: "Added to upload queue" },
+  contribution_queue_reason_connection: { zh: "登录状态已过期，重新连接后即可继续上传。", en: "Session expired. Reconnect to resume upload." },
+  contribution_queue_reason_upload: { zh: "上传中断，请点击重试。", en: "Upload interrupted. Please retry." },
+  contribution_queue_reason_snapshot: { zh: "本地快照读取失败，请重新从详情页提交。", en: "Local snapshot unreadable. Please submit again." },
+  contribution_queue_reason_print_photo: { zh: "请补全梯度卡 / 校准板与真实打印成品实拍后再提交审核。", en: "Attach the required calibration card/board and finished print photos before submitting." },
+  contribution_print_photos: { zh: "实拍核验凭证（必填）", en: "Print verification photos (required)" },
+  contribution_print_photos_materials: { zh: "实拍核验凭证（必填，共 3–4 张）", en: "Print verification photos (required, 3–4 total)" },
+  contribution_print_photos_luts: { zh: "实拍核验凭证（必填，共 2–4 张）", en: "Print verification photos (required, 2–4 total)" },
+  contribution_print_photos_optional: { zh: "实拍核验凭证（可选替换，最多 4 张）", en: "Print verification photos (optional replacement, up to 4)" },
+  contribution_print_photos_hint: { zh: "上传梯度卡、校准板与真实打印成品实拍图，支持选择、拖拽或粘贴（JPG / PNG / WebP，自动去除 EXIF 定位隐私）。", en: "Upload real photos of your printed calibration card/board and finished print. Supports file picker, drag-drop, or paste (EXIF metadata stripped automatically)." },
+  contribution_print_photos_privacy_note: { zh: "支持点击对应卡片上传、拖拽图片到槽位或粘贴（JPG / PNG / WebP，单张压缩后 < 1 MB，自动去除 EXIF 定位与相机隐私）。", en: "Click a slot, drag onto a card, or paste (JPG / PNG / WebP; EXIF location & camera metadata stripped automatically)." },
+  contribution_print_slot_white_card: { zh: "白底梯度卡实拍", en: "White-backing gradient card" },
+  contribution_print_slot_white_card_hint: { zh: "均匀光源平拍白底梯度卡（必传 1 张）", en: "Flat photo of the gradient card on white backing (1 required)" },
+  contribution_print_slot_black_card: { zh: "黑底梯度卡实拍", en: "Black-backing gradient card" },
+  contribution_print_slot_black_card_hint: { zh: "同一光源平拍黑底梯度卡（必传 1 张）", en: "Flat photo of the gradient card on black backing (1 required)" },
+  contribution_print_slot_calibration_board: { zh: "校准色卡板实拍", en: "Calibration board photo" },
+  contribution_print_slot_calibration_board_hint: { zh: "单板上传 1 张；5 色 / 8 色双板请上传 A/B 共 2 张", en: "1 photo for single board, or 2 photos for dual A/B boards" },
+  contribution_print_slot_finished_print: { zh: "真实打印成品实拍", en: "Finished 3D print photo" },
+  contribution_print_slot_finished_print_hint: { zh: "至少 1 张使用该耗材或预设实际打印出的浮雕 / 样件实拍（1–2 张）", en: "At least 1 real photo of a finished print made with this filament or LUT (1–2 photos)" },
+  contribution_print_slot_upload: { zh: "上传实拍", en: "Upload photo" },
+  contribution_print_slot_replace: { zh: "更换照片", en: "Replace" },
+  contribution_print_slot_add_more: { zh: "再加 1 张", en: "Add 2nd" },
+  contribution_print_slot_ready: { zh: "已上传", en: "Ready" },
+  contribution_print_slot_required: { zh: "必传", en: "Required" },
+  contribution_print_photos_add: { zh: "上传实拍照片", en: "Add print photo" },
+  contribution_print_photos_remove: { zh: "移除照片", en: "Remove photo" },
+  contribution_snapshot_failed: { zh: "已保存到本地，自动入队失败，可在详情页手动贡献。", en: "Saved locally, but auto-queue failed. Share manually from details." },
+  contribution_status_queued: { zh: "等待上传", en: "Queued" },
+  contribution_origin_choose: { zh: "请选择数据来源", en: "Select data source" },
+  contribution_origin_original: { zh: "本人实测校准", en: "Calibrated by me" },
+  contribution_origin_update_original: { zh: "提交后会更新你的原投稿。", en: "This submission will update your original contribution." },
+  contribution_origin_adapted: { zh: "基于他人数据调整", en: "Adapted from existing data" },
+  contribution_origin_redistributed: { zh: "获授权代发 / 搬运", en: "Shared with permission" },
+  contribution_origin_linked: { zh: "关联的原公开资源", en: "Linked source resource" },
+  contribution_origin_ambiguous: { zh: "公共库中已有相同数据，请填写原始来源链接。", en: "Matching public data exists. Please provide the original source URL." },
+  contribution_original_author: { zh: "原作者", en: "Original author" },
+  contribution_source_url: { zh: "原发布链接", en: "Source URL" },
+  contribution_rights_basis: { zh: "授权依据或协议", en: "License or permission" },
+  resource_origin_declaration: { zh: "来源声明", en: "Origin" },
+  resource_origin_original: { zh: "作者实测校准", en: "Author calibrated" },
+  resource_origin_adapted: { zh: "基于已有数据调整", en: "Adapted" },
+  resource_origin_redistributed: { zh: "获授权代发", en: "Shared with permission" },
+  resource_origin_revision: { zh: "原资源版本", en: "Base revision" },
+  contribution_submit: { zh: "提交审核", en: "Submit for review" },
+  contribution_received: { zh: "已提交审核", en: "Submitted" },
+  contribution_preparing: { zh: "正在读取资源…", en: "Reading resource…" },
+  contribution_prepare_invalid: { zh: "校准数据校验未通过，请检查本地文件后重试。", en: "Calibration check failed. Verify local files and retry." },
+  contribution_retry_prepare: { zh: "重试读取", en: "Retry" },
+  contribution_failed: { zh: "操作失败，请重试。", en: "Action failed. Please retry." },
+  contribution_refresh: { zh: "刷新", en: "Refresh" },
+  contribution_history_empty: { zh: "暂无投稿记录", en: "No submissions yet" },
+  contribution_web_history: { zh: "前往网页端管理投稿", en: "Manage on web" },
+  contribution_manage: { zh: "网页查看", en: "Open on web" },
+  contribution_material: { zh: "耗材档案", en: "Material profile" },
+  contribution_lut: { zh: "LUT", en: "LUT" },
+  contribution_status_draft: { zh: "草稿", en: "Draft" },
+  contribution_status_pending: { zh: "待审核", en: "Pending review" },
+  contribution_status_published: { zh: "已发布", en: "Published" },
+  contribution_status_approved: { zh: "已发布", en: "Published" },
+  contribution_status_needs_changes: { zh: "待修改", en: "Changes requested" },
+  contribution_status_rejected: { zh: "未通过", en: "Rejected" },
+  contribution_status_unpublished: { zh: "已下架", en: "Unlisted" },
+  contribution_save_lut: { zh: "保存到本地并分享", en: "Save locally & share" },
+  resources_filter_group: { zh: "筛选资源", en: "Filter resources" },
+  resources_filter_brand: { zh: "品牌", en: "Brand" },
+  resources_filter_material: { zh: "材质", en: "Material" },
+  resources_filter_series: { zh: "系列", en: "Series" },
+  resources_filter_color: { zh: "色系", en: "Color" },
+  resources_filter_count: { zh: "色数", en: "Colors" },
+  resources_filter_search: { zh: "筛选{field}…", en: "Filter {field}…" },
+  resources_filter_loading: { zh: "正在加载目录…", en: "Loading catalog…" },
+  resources_filter_failed: { zh: "筛选项加载不完整，请重试。", en: "Failed to load all filter options. Retry." },
+  resources_filter_no_options: { zh: "无匹配筛选项", en: "No matching options" },
+  resources_filter_done: { zh: "完成", en: "Done" },
+  resources_filter_color_hint: { zh: "按色系快速归类浏览", en: "Grouped by color family" },
+  resources_filter_lut_colors_hint: { zh: "同时包含所选的全部原料色系", en: "Matches LUTs containing all selected color families" },
   common_close: { zh: "关闭", en: "Close" },
+  common_cancel: { zh: "取消", en: "Cancel" },
+  material_guide_title: { zh: "试试耗材档案配色", en: "Try material profiles" },
+  material_guide_body: { zh: "每卷耗材单独建档，后续可跨品牌自由混搭，换一卷料无需重打整套色卡。", en: "Profile each spool once and mix them freely—swap one filament without recalibrating the whole palette." },
+  material_guide_find: { zh: "查找我的耗材", en: "Find my filaments" },
+  material_guide_hint: { zh: "试试耗材档案配色", en: "Try material profiles" },
+  material_guide_learn: { zh: "了解耗材档案", en: "About material profiles" },
+  material_guide_cards: { zh: "了解梯度卡", en: "How gradient cards work" },
+  material_guide_dismiss: { zh: "关闭引导，不再提示", en: "Dismiss guide" },
+  material_guide_explanation: { zh: "梯度卡用于建立单种耗材的档案：每种耗材打印黑白底各一张并拍照提取。建好后日常转换直接勾选档案即可。", en: "Gradient cards profile a single filament from white- and black-backed test prints. For daily conversions, just pick saved profiles." },
+  material_guide_example: { zh: "比如红黄蓝白四色里想换一款蓝色，只需下载或校准新蓝色的档案，其余三卷档案直接沿用。", en: "For example, to swap blue in a 4-color set, just download or calibrate the new blue profile and keep the rest." },
+  material_guide_conditions: { zh: "请确认品牌、系列、色号与校准层高一致；跨品牌混搭需注意打印温度兼容。原有经典 LUT 仍可照常使用。", en: "Match brand, series, color code, and layer height; check temperature compatibility when mixing brands. Classic LUTs remain available." },
+  material_guide_picker_hint: { zh: "先挑本地档案，没有可去云端或离线包下载；点击确认后才会切换配色来源。", en: "Pick local profiles or download from cloud/offline packs. Color source switches only after you confirm." },
+  material_guide_use_preview: { zh: "使用这些耗材预览", en: "Preview with these" },
+  material_guide_use: { zh: "使用这些耗材", en: "Use selected filaments" },
+  material_guide_select_required: { zh: "请至少勾选一份耗材档案。", en: "Select at least one material profile." },
+  material_guide_create_missing: { zh: "没有同款？去建档", en: "No match? Calibrate one" },
+  material_guide_next_extract: { zh: "拍好照片后去提取", en: "Next: Extract from photo" },
+  material_guide_add_to_palette: { zh: "加入当前配色", en: "Add to current palette" },
+  material_guide_return_lut: { zh: "切回原 LUT", en: "Back to previous LUT" },
+  material_guide_name_placeholder: { zh: "系列、颜色或色号（可稍后补充）", en: "Series, color, or code (optional)" },
+  "settings.filament_market": { zh: "耗材包装名称", en: "Filament naming region" },
+  "settings.filament_market_auto": { zh: "跟随界面语言", en: "Match UI language" },
+  "settings.filament_market_cn": { zh: "中国大陆包装", en: "Mainland China" },
+  "settings.filament_market_international": { zh: "国际包装", en: "International" },
+  resources_original_name: { zh: "原始档案名", en: "Original profile name" },
+  resources_lut_original_name: { zh: "原始文件名", en: "Original LUT name" },
+  resources_color_name: { zh: "颜色名称", en: "Color name" },
+  resources_mixed_brands: { zh: "混合品牌", en: "Mixed brands" },
+  resources_color_count: { zh: "{count} 色", en: "{count} colors" },
+  resources_channel_name: { zh: "通道 {number}", en: "Channel {number}" },
+  resources_series: { zh: "产品系列", en: "Series" },
+  resources_brand_support: { zh: "适配与支持", en: "Compatibility and support" },
+  resources_polymaker_support: {
+    zh: "Panchroma PLA 适配中，Polymaker 提供耗材与赞助支持。",
+    en: "Panchroma PLA compatibility is in progress, with filament and sponsorship support from Polymaker.",
+  },
+  resources_polymaker_disclaimer: {
+    zh: "Logo 仅表示耗材适配及实际提供的支持，不代表 Polymaker 对 Lumina Studio 软件整体或打印效果的认证或保证。",
+    en: "The logo indicates filament compatibility and support only, and does not imply Polymaker certification or warranty for Lumina Studio or print results.",
+  },
+  resources_description: { zh: "备注说明", en: "Notes" },
+  resources_lut_description: { zh: "备注说明", en: "Notes" },
+  resources_contributor: { zh: "贡献者", en: "Contributor" },
+  resources_purchase: { zh: "购买渠道", en: "Purchase links" },
+  resources_product_page: { zh: "商品链接", en: "Product URL" },
+  resources_used_colors: { zh: "耗材通道", en: "Filament slots" },
+  resources_colors_missing: { zh: "未标注具体耗材", en: "Filaments not specified" },
+  resources_product_code: { zh: "色号 / 货号", en: "Color code / SKU" },
+  resources_lut_calibration_board: { zh: "校准板", en: "Calibration board" },
+  resources_lut_base_board: { zh: "基础板", en: "Base" },
+  resources_lut_extension_board: { zh: "扩展板", en: "Extension" },
+  resources_lut_letter_board: { zh: "{letter} 板", en: "Board {letter}" },
+  resources_lut_numbered_board: { zh: "第 {page} / {total} 张", en: "Board {page} of {total}" },
+  resources_lut_recipe_count: { zh: "{count} 条配方", en: "{count} recipes" },
+  resources_lut_recipe_overview: { zh: "配方色表", en: "Recipe palette" },
+  resources_lut_no_board: { zh: "暂无色板数据", en: "No board data" },
+  resources_lut_no_preview_short: { zh: "无预览", en: "No preview" },
+  resources_lut_loading_board: { zh: "加载色卡…", en: "Loading…" },
+  resources_lut_preview_failed: { zh: "色卡加载失败，可以重试。", en: "Failed to load board previews. Retry." },
+  resources_lut_switch_board: { zh: "切换校准板", en: "Switch board" },
+  resources_lut_flip_board: { zh: "{current}，点击查看{next}", en: "{current} — click for {next}" },
+  resources_lut_previous_board: { zh: "上一张校准板", en: "Previous board" },
+  resources_lut_next_board: { zh: "下一张校准板", en: "Next board" },
+  resources_thumbnail_caption_measured: { zh: "实测梯度", en: "Measured" },
+  resources_thumbnail_caption_illustrative: { zh: "代表色示意", en: "Illustrative" },
+  resources_thumbnail_caption_unknown: { zh: "暂无配色", en: "No color" },
+  resources_color_description: { zh: "颜色说明", en: "Color notes" },
+  resources_alias_search_partial: { zh: "完整索引加载失败，当前仅匹配服务端基础结果。", en: "Full index unavailable; showing basic server matches only." },
+  resources_in_bundle: { zh: "可离线添加", en: "In offline pack" },
+  resources_local_available: { zh: "已在本地", en: "In library" },
+  resources_offline_empty: { zh: "暂无离线资源", en: "No offline resources" },
+  resources_browse_materials: { zh: "去云端找耗材", en: "Browse cloud filaments" },
+  resources_find_first_material: { zh: "本地还没有耗材，查找第一份档案…", en: "No local profiles yet — find your first…" },
+  resources_find_first_lut: { zh: "本地还没有 LUT，查找第一份…", en: "No local LUTs yet — find your first…" },
+  resources_browse_luts: { zh: "去云端找 LUT", en: "Browse cloud LUTs" },
+  resources_browse_public: { zh: "去公开库查找", en: "Browse public library" },
+  resources_import: { zh: "导入本地文件", en: "Import local file" },
+  resources_calibrate: { zh: "自己校准", en: "Calibrate new" },
+  resources_use_for_task: { zh: "用于当前任务", en: "Use in current task" },
+  resources_calibration_return_hint: { zh: "已保存，可直接带回刚才的选择列表。", en: "Saved — add directly to your previous selection." },
+  resources_calibration_task_changed: { zh: "已存入本地库；原转换任务已变动，请返回转换页重新选择。", en: "Saved to library. The conversion task changed—reselect it in Converter." },
+  resources_calibration_return_failed: { zh: "未能带回校准结果，请重试。", en: "Could not apply calibration result. Retry." },
+  resources_materials_empty: { zh: "本地暂无耗材档案", en: "No local material profiles" },
+  resources_luts_empty: { zh: "本地暂无 LUT", en: "No local LUTs" },
+  resources_materials_intro: { zh: "可从公开库按品牌、系列和色号按需下载，也可打印黑白梯度卡自行建档。", en: "Download profiles by brand and color code from the public library, or print gradient cards to calibrate your own." },
+  resources_luts_intro: { zh: "可按耗材品牌和配色组合从公开库下载，也可导入本地文件或打印校准板提取。", en: "Download LUTs matching your filament set, import local files, or extract from printed calibration boards." },
+  resources_library_cleared: { zh: "本地资源已被移除，可前往云端目录重新按需添加。", en: "Local resources were removed. Browse the cloud catalog to add what you need." },
+  resources_no_matches: { zh: "没有符合筛选条件的资源。", en: "No matching resources." },
+  resources_clear_search: { zh: "清空搜索", en: "Clear search" },
+  resources_clear_filters: { zh: "清除筛选", en: "Clear filters" },
+  resources_search_incomplete: { zh: "已加载的条目中暂未找到，完整目录仍在加载。", en: "No matches yet—still loading the rest of the catalog." },
+  resources_offline_loading: { zh: "正在读取离线包…", en: "Loading offline pack…" },
+  resources_retry: { zh: "重试", en: "Retry" },
+  resources_status_failed: { zh: "资源状态读取失败，请重试；本地已有资源仍可正常使用。", en: "Status check failed. Retry; existing local files still work." },
+  resources_source_not_configured: { zh: "未配置在线目录，可直接导入本地文件。", en: "Online catalog not configured. Import local files instead." },
+  resources_browse_offline: { zh: "从离线包挑选", en: "Browse offline pack" },
+  resources_cloud_catalog: { zh: "云端目录", en: "Cloud catalog" },
+  resources_github_catalog: { zh: "GitHub 目录", en: "GitHub catalog" },
+  community_snapshot_counts: { zh: "统计时间", en: "Snapshot" },
+  resources_offline_catalog: { zh: "离线包", en: "Offline pack" },
+  resources_catalog_source: { zh: "资源来源", en: "Resource source" },
+  resources_offline_search: { zh: "搜索品牌、系列、色号或作者…", en: "Search brand, series, code, or author…" },
+  resources_add_local: { zh: "添加到本地", en: "Add to library" },
+  resources_added_named: { zh: "已将「{name}」添加到本地。", en: "Added “{name}” to library." },
+  resources_offline_busy: { zh: "正在添加其他资源，请稍候。", en: "Another item is being added. Please wait." },
+  resources_seed_missing: { zh: "未找到随包离线资源，请改用在线目录下载。", en: "Offline pack missing. Download from the online catalog instead." },
+  resources_seed_damaged: { zh: "离线资源包校验失败，请改用在线目录或重新安装软件。", en: "Offline pack corrupted. Use the online catalog or reinstall." },
+  resources_offline_failed: { zh: "离线资源读取失败，请重试。", en: "Failed to read offline pack. Retry." },
+  resources_cached_catalog: { zh: "当前显示本地缓存目录，下载新资源需联网。", en: "Showing cached catalog; internet connection required to download." },
+  resources_previous_catalog: { zh: "刷新失败，当前显示上次缓存的目录。", en: "Refresh failed; showing previously cached catalog." },
+  resources_back_to_picker: { zh: "返回本地选择", en: "Back to local list" },
+  resources_installed_pick: { zh: "已添加到本地库，返回列表勾选即可使用。", en: "Added to library—return to the list to select it." },
+  resources_imported_pick: { zh: "导入成功，勾选后点击完成即可使用。", en: "Imported—select it and click Done." },
+  resources_task_changed: { zh: "当前图片或颜色模式已改变，请重新选择资源。", en: "Image or color mode changed. Please reselect resources." },
+  resources_incompatible_lut: { zh: "所选 LUT 的颜色模式或通道不兼容，请选择同模式 LUT。", en: "Selected LUTs have incompatible color modes or channels." },
+  resources_lut_unavailable: { zh: "所选 LUT 文件缺失或无法读取，请恢复文件或取消勾选。", en: "Selected LUT file is missing or unreadable. Restore or deselect it." },
+  resources_mode_change: { zh: "所选 LUT 为 {mode}，确认后将自动切换颜色模式。", en: "Selected LUT uses {mode}; confirming will switch color mode." },
+  resources_confirm_mode: { zh: "使用 {mode} 模式", en: "Use {mode}" },
+  ...projectTranslations,
+  converter_session_expired: {
+    zh: "会话已过期，请重新预览。图片和参数已保留。",
+    en: "The session expired. Your image and settings are preserved; run preview again.",
+  },
   cloud_library_update: { zh: "更新", en: "Update" },
-  cloud_library_results: { zh: "匹配结果", en: "Matching results" },
-  cloud_library_loading_index: { zh: "正在加载完整目录，搜索结果尚不完整…", en: "Loading the full catalog; search results are not complete yet…" },
+  resources_redownload: { zh: "重新下载", en: "Redownload" },
+  resources_install_filter: { zh: "安装状态", en: "Install status" },
+  resources_updated_named: { zh: "已更新「{name}」", en: "Updated “{name}”" },
+  resources_redownloaded_named: { zh: "已重新下载「{name}」", en: "Redownloaded “{name}”" },
+  resources_version_differs: { zh: "与本地当前版本不同", en: "Differs from local version" },
+  resources_local_modified: { zh: "本地文件已改动", en: "Modified locally" },
+  resources_history_unavailable: { zh: "本地备份文件缺失或已改动，无法恢复", en: "Backup file missing or modified; cannot restore" },
+  resources_history_preserve: { zh: "切换版本不会影响已打开项目正在使用的文件。", en: "Open projects keep using their current file." },
+  resources_history_failed: { zh: "恢复失败，请刷新版本记录后重试。", en: "Restore failed. Refresh history and retry." },
+  cloud_library_results: { zh: "匹配结果", en: "Results" },
+  cloud_library_results_count: { zh: "共 {count} 项", en: "{count} items" },
+  cloud_library_loading_index: { zh: "正在加载剩余目录…", en: "Loading remaining catalog…" },
   desktop_menu_about: { zh: "关于 Lumina Studio", en: "About Lumina Studio" },
   desktop_menu_settings: { zh: "设置…", en: "Settings…" },
   desktop_menu_services: { zh: "服务", en: "Services" },
@@ -255,9 +663,17 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "请详细描述发生了什么、你期望发生什么、复现步骤……",
     en: "What happened, what did you expect, and how can we reproduce it?",
   },
-  bug_report_modal_email_label: {
-    zh: "你的邮箱（可选，方便我们回复你）",
-    en: "Your email (optional, so we can follow up)",
+  bug_report_modal_needs_reply: {
+    zh: "需要人工回复 / 修复后通知我",
+    en: "Need a reply / notify me when fixed",
+  },
+  bug_report_modal_contact_label: {
+    zh: "联系方式（邮箱、QQ 或微信）",
+    en: "Contact (email, QQ, or WeChat)",
+  },
+  bug_report_modal_diagnostics_only: {
+    zh: "仅上报诊断信息，无需回复",
+    en: "Send diagnostics only, no reply needed",
   },
   bug_report_modal_screenshot_label: {
     zh: "截图（可选）",
@@ -351,9 +767,21 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "请求缺少必填数据或包含无效值。",
     en: "The request is missing required data or contains invalid values.",
   },
+  api_error_material_archive_unavailable: {
+    zh: "所选耗材已不可用或缺少校准数据。请从耗材库重新选择，或导入完整的耗材档案。",
+    en: "A selected material is unavailable or missing calibration data. Choose a material from your library or import a complete material archive.",
+  },
   api_error_vector_native_requires_svg: {
     zh: "矢量建模模式仅支持 SVG 文件。请上传 SVG，或切换到“高保真”或“像素艺术”模式。",
     en: "Vector Native mode requires an SVG file. Upload an SVG, or switch to High-Fidelity or Pixel Art mode.",
+  },
+  api_error_template_slot_capacity: {
+    zh: "当前模型需要 {requiredSlots} 个耗材槽，但所选 3MF 模板只有 {availableSlots} 个。请换用至少 {requiredSlots} 槽的模板，或减少模型使用的耗材。",
+    en: "This model needs {requiredSlots} material slots, but the selected 3MF template has {availableSlots}. Choose a template with at least {requiredSlots} slots or use fewer materials.",
+  },
+  api_error_template_material_mapping: {
+    zh: "所选 3MF 模板的喷头分配不完整。请在 Bambu Studio 中为每种耗材指定喷头，或选择自动耗材分组，然后保存并重新导入模板。",
+    en: "The selected 3MF template has incomplete nozzle assignments. In Bambu Studio, assign every material to a nozzle or choose automatic material grouping, then save and import the template again.",
   },
   api_error_source_image_unreadable: {
     zh: "无法读取这张图片。请确认文件未损坏，并重新导出为 PNG、JPEG 或 WebP 后再上传。",
@@ -398,6 +826,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   api_error_model_surface_boolean_failed: {
     zh: "模型覆面开槽计算失败。请提交问题反馈，并附上模型和图片。",
     en: "Model-surface pocket calculation failed. Submit a bug report with the model and artwork attached.",
+  },
+  api_error_model_surface_artwork_no_overlap: {
+    zh: "图案没有覆盖选中的模型表面。请把图案移到表面上，再预览一次。",
+    en: "The artwork does not cover the selected model surface. Move it onto the surface and preview again.",
   },
   api_error_http_429: {
     zh: "请求过于频繁，请稍后再试。",
@@ -1386,6 +1818,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   bug_report_validation_description_required: {
     zh: "请填写问题描述",
     en: "Please describe the problem",
+  },
+  bug_report_validation_contact: {
+    zh: "请填写有效的邮箱、QQ 或微信（3 至 320 个字符）。",
+    en: "Enter an email address, QQ number, or WeChat ID (3 to 320 characters).",
   },
   bug_report_validation_description_truncated: {
     zh: "问题描述已截断到 10000 个字符。",
@@ -2703,6 +3139,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "拼图模式开启时，挂件环会被禁用。",
     en: "Keychain Loop is disabled while puzzle mode is enabled.",
   },
+  large_format_loop_disabled_hint: {
+    zh: "大画幅分块模式下不支持挂件环。",
+    en: "Large-format tiling does not support keychain loops.",
+  },
 
   // ==================== TAB Navigation Titles ====================
   "tab.converter": {
@@ -2744,6 +3184,14 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   "tab.materialRecipe": {
     zh: "配方查询",
     en: "Recipe Query",
+  },
+  "tab.materialGamut": {
+    zh: "色域覆盖",
+    en: "Gamut Coverage",
+  },
+  "tab.materialCache": {
+    zh: "求解缓存",
+    en: "Solver Cache",
   },
   "tab.lutManager": {
     zh: "LUT 合并",
@@ -5119,8 +5567,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Color Data Source",
   },
   basic_source_version_hint: {
-    zh: "选择配色数据从哪里来：\n• 耗材档案：使用你在「耗材提取」中创建的耗材，自由搭配组合。\n• 经典 LUT：使用实际打印并扫描出的色卡数据，颜色最可靠。",
-    en: "Choose where the color data comes from:\n• Material Archive: freely combine materials you created in Material Extraction.\n• Classic LUT: data measured from actually printed color charts — most reliable.",
+    zh: "选择配色数据从哪里来：\n• 耗材档案（推荐）：按单种耗材建档，自由搭配。可以下载现成档案，也可以打印黑白梯度卡自行校准。\n• 经典 LUT：使用一组耗材的实测配方色表，适合继续使用已有 LUT。\n两种方式都需要匹配实际耗材与校准条件。",
+    en: "Choose where the color data comes from:\n• Material profiles (recommended): profile individual filaments and combine them freely. Download existing profiles or calibrate with black and white gradient cards.\n• Classic LUT: measured recipe colors for a set of filaments, suitable for continuing with an existing LUT.\nBoth require matching filaments and calibration conditions.",
   },
   basic_source_version_legacy: {
     zh: "经典 LUT",
@@ -5143,8 +5591,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Loading materials\u2026",
   },
   basic_material_empty: {
-    zh: "\u65e0\u53ef\u7528\u8017\u6750\uff0c\u8bf7\u5148\u5728\u300c\u8017\u6750\u63d0\u53d6\u300d\u4e2d\u521b\u5efa",
-    en: "No materials available. Create one in Material Extraction first.",
+    zh: "还没有耗材档案，先查找现成档案，或用梯度卡自行建档。",
+    en: "No material profiles yet. Find existing profiles or create your own with gradient cards.",
   },
   basic_material_selected_count: {
     zh: "\u5df2\u9009\u8017\u6750",
@@ -5181,10 +5629,6 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   basic_material_max_layer_count_hint: {
     zh: "每种颜色配方允许使用的最多有效颜色层数，也是最终模型的统一打印层数。",
     en: "Maximum number of effective color layers allowed per recipe and the uniform printed layer count of the final model.",
-  },
-  basic_material_dynamic_range_hint: {
-    zh: "动态模式会在设定范围内自动加载并评估候选；单一层数的穷举缓存入口暂不显示。",
-    en: "Dynamic mode automatically loads and evaluates candidates across the configured range; the single-layer-count cache control is hidden.",
   },
   basic_material_layer_height_label: {
     zh: "\u5c42\u9ad8",
@@ -5241,6 +5685,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   basic_material_picker_selected_label: {
     zh: "已选",
     en: "Selected",
+  },
+  basic_material_picker_summary_more: {
+    zh: "另有 {count} 种",
+    en: "{count} more",
   },
   basic_material_picker_close: {
     zh: "\u5173\u95ed",
@@ -5386,10 +5834,6 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "穷举缓存",
     en: "Exhaustive Cache",
   },
-  basic_material_cache_open_button: {
-    zh: "\u7a77\u4e3e\u7f13\u5b58\u2026",
-    en: "Exhaustive cache\u2026",
-  },
   basic_material_cache_section_description: {
     zh: "为当前耗材组合构建 Lab 网格配方库，后续出图直接查表。",
     en: "Build a Lab-grid recipe library for this palette so future conversions are served from cache.",
@@ -5425,6 +5869,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   basic_material_cache_fallback_hint: {
     zh: "未构建缓存时，参数调整不会自动预览；仍可手动预览，但会使用临时候选求解器，耗时较长，结果可能与持久缓存不同。",
     en: "When no cache is available, parameter changes will not auto-preview. You can still preview manually with the temporary candidate solver; it may take longer and differ from a persisted-cache result.",
+  },
+  basic_material_cache_layer_limit_hint: {
+    zh: "穷举缓存最多支持 {max} 层。更多层数请使用下方的智能缓存。",
+    en: "Exhaustive caches support up to {max} layers. For deeper stacks, use the smart cache below.",
   },
   basic_material_cache_build_button: {
     zh: "立即构建缓存",
@@ -5962,6 +6410,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "RAW 图片预览失败：{error}。请先转换为 PNG/JPG 后再试。",
     en: "RAW image preview failed: {error}. Please convert it to PNG or JPG and try again.",
   },
+  converter_image_preview_failed: {
+    zh: "图片预览失败：{error}。请转换为 PNG/JPG 后再试。",
+    en: "Image preview failed: {error}. Please convert it to PNG or JPG and try again.",
+  },
   extractor_raw_preview_failed: {
     zh: "RAW 图片预览失败：{error}。请先转换为 PNG/JPG 后再试。",
     en: "RAW image preview failed: {error}. Please convert it to PNG or JPG and try again.",
@@ -5981,8 +6433,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Large Format Mode",
   },
   basic_large_format_hint: {
-    zh: "作品超过打印床尺寸时，自动把模型切成多块，分别打印后再拼接。会生成一个包含多个 3MF 文件的压缩包。",
-    en: "When the artwork exceeds the print bed, the model is automatically split into tiles to print separately and assemble afterwards. Produces a ZIP containing multiple 3MF files.",
+    zh: "把作品分块打印后再拼接，3MF 文件会打包为 ZIP。开启大画幅时会关闭挂件环。",
+    en: "Split the artwork into tiles for printing and assembly. The 3MF files are packaged in a ZIP. Turning on Large Format turns off the keychain loop.",
   },
   large_format_warning_native_unavailable: {
     zh: "此 SVG 暂不支持原生大画幅切片，已改用栅格切片。",
@@ -6105,6 +6557,38 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   adv_unlock_quantize_hint: {
     zh: "解锁后颜色数量上限从 256 提升到 8192。会明显增加内存占用和处理时间，仅在确有需要时使用。",
     en: "Unlocking raises the color count ceiling from 256 to 8192. This noticeably increases memory use and processing time; enable only when truly needed.",
+  },
+  adv_unlock_material_layers: {
+    zh: "解锁 30 层固定叠色",
+    en: "Unlock 30 fixed colour layers",
+  },
+  adv_unlock_material_layers_hint: {
+    zh: "将耗材档案模式的固定叠色层数上限从 10 层提高到 30 层，主要用于 0.04 mm 等细层高打印。更多层数会增加首次预览耗时；关闭后固定层数收回到 10 层。动态叠层始终可选 5–30 层，无需解锁。",
+    en: "Raises the fixed material-archive layer limit from 10 to 30, mainly for fine layer heights such as 0.04 mm. More layers increase the first preview time; turning this off caps the fixed count at 10. Dynamic stacking always supports 5–30 layers without unlocking.",
+  },
+  adv_unlock_material_layers_confirm_title: {
+    zh: "解锁 30 层固定叠色？",
+    en: "Unlock 30 fixed colour layers?",
+  },
+  adv_unlock_material_layers_warn_speed: {
+    zh: "速度：超过 10 层后，首次预览要先构建求解数据，可能需要几十秒，配置较低的电脑会更久；求解缓存也会占用更多内存和磁盘。",
+    en: "Speed: above 10 layers the first preview builds solver data first, which can take tens of seconds (longer on slower computers), and the solver cache uses more memory and disk.",
+  },
+  adv_unlock_material_layers_warn_raster: {
+    zh: "层高：高保真和像素模式的模型固定按 0.08 mm 层高生成。使用 0.04 mm 等其他层高时请用矢量模式，否则颜色会不准。",
+    en: "Layer height: High-Fidelity and Pixel modes always build the model at 0.08 mm layers. For other layer heights such as 0.04 mm, use Vector mode, or the colours will be off.",
+  },
+  adv_unlock_material_layers_warn_lock: {
+    zh: "关闭后，超过 10 层的固定层数会收回到 10 层，动态叠层范围保持不变。",
+    en: "Turning this off caps the fixed count at 10 layers and keeps the dynamic range unchanged.",
+  },
+  adv_unlock_material_layers_confirm: {
+    zh: "解锁",
+    en: "Unlock",
+  },
+  adv_unlock_material_layers_cancel: {
+    zh: "取消",
+    en: "Cancel",
   },
   adv_chroma_gate: {
     zh: "暗色彩度门槛",
@@ -6328,8 +6812,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Rotation Angle",
   },
   loop_angle_hint: {
-    zh: "挂件环相对于模型的旋转角度（度）。0° 为竖直向上，正值顺时针旋转。",
-    en: "Rotation angle of the loop relative to the model (in degrees). 0° is vertical upward; positive values rotate clockwise.",
+    zh: "挂件环绕附着点旋转。从上方看，0° 朝向图案顶部，正值逆时针旋转。",
+    en: "The loop rotates around its attachment point. Viewed from above, 0° points toward the top of the artwork and positive angles turn counterclockwise.",
   },
   loop_position_preset: {
     zh: "位置预设",
@@ -6340,16 +6824,16 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "X Offset",
   },
   loop_offset_x_hint: {
-    zh: "挂件环中心相对于模型中心的水平偏移（毫米）。正值向右，负值向左。",
-    en: "Horizontal offset of the loop center from the model center (in mm). Positive moves right, negative moves left.",
+    zh: "挂件环相对预设位置的水平偏移（毫米）。正值向右，负值向左。",
+    en: "Horizontal offset from the preset position (in mm). Positive moves right, negative moves left.",
   },
   loop_offset_y: {
     zh: "Y 偏移",
     en: "Y Offset",
   },
   loop_offset_y_hint: {
-    zh: "挂件环相对当前预设吸附点的垂直偏移（毫米）。顶部居中且未旋转时，向内移动会限制在模型局部轮廓处。",
-    en: "Vertical offset from the current preset anchor (in mm). For an unrotated top-center loop, inward movement is clamped at the model's local contour.",
+    zh: "挂件环相对预设位置的垂直偏移（毫米）。正值向上，负值向下。",
+    en: "Vertical offset from the preset position (in mm). Positive moves up, negative moves down.",
   },
   loop_preset_top_center: {
     zh: "上中",
@@ -6416,6 +6900,14 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   action_batch_upload_hint_native: {
     zh: "请先添加图片并选择品牌和数据库",
     en: "Please add images and select a brand and databases first",
+  },
+  action_batch_custom_template_unsupported: {
+    zh: "批量生成需要使用内置打印配置",
+    en: "Batch generation requires a built-in print configuration",
+  },
+  action_batch_use_builtin_configuration: {
+    zh: "本工程改用内置配置",
+    en: "Use the built-in configuration for this project",
   },
   action_preview: {
     zh: "预览",
@@ -7237,6 +7729,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   "batch.download.mergedThreemf": {
     zh: "下载批量 3MF",
     en: "Download batch 3MF",
+  },
+  "batch.warnings.mergeUnavailable.body": {
+    zh: "合并未完成，已生成的单件仍可下载。请分别导入切片软件。",
+    en: "The merge could not finish. Download the completed models below and import them into your slicer individually.",
   },
   "batch.warnings.plateOverflow.title": {
     zh: "部分模型超出热床范围",
@@ -8394,6 +8890,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "导入的配方同时启用了拼图模式和挂件环。为保持状态有效，挂件环已被禁用。",
     en: "The imported recipe enabled both puzzle mode and a keychain loop. The loop has been disabled to keep the state valid.",
   },
+  recipe_import_warning_large_format_conflict_loop: {
+    zh: "导入的配方开启了大画幅分块，已关闭挂件环。",
+    en: "The keychain loop was turned off because the imported recipe uses large-format tiling.",
+  },
   recipe_import_warning_back_labels_unavailable: {
     zh: "导入的配方启用了拼图背面标签。当前版本暂不支持背面标签，已自动关闭。",
     en: "The imported recipe enabled puzzle back labels. Back labels are not available in this version and have been disabled.",
@@ -8485,6 +8985,26 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   workshop_runtime_load_failed: {
     zh: "模块加载失败",
     en: "Module failed to load",
+  },
+  workshop_runtime_disconnected: {
+    zh: "模块连接已断开。未保存的编辑可能无法恢复。",
+    en: "The module disconnected. Unsaved edits may be lost.",
+  },
+  workshop_runtime_reload: {
+    zh: "重新加载模块",
+    en: "Reload module",
+  },
+  workshop_project_snapshots_unsupported: {
+    zh: "当前创意工坊模块版本不支持工程快照。请安装支持快照的版本。",
+    en: "This Workshop module version does not support project snapshots. Install a version that supports snapshots.",
+  },
+  workshop_project_save_disconnected: {
+    zh: "创意工坊模块连接已断开。请在创意工坊重新打开或重新加载模块，再保存工程。",
+    en: "The Workshop module disconnected. Reopen or reload it in Creative Workshop, then try saving again.",
+  },
+  workshop_project_restore_disconnected: {
+    zh: "创意工坊模块连接已断开。请在创意工坊重新打开或重新加载模块，再重试打开工程。",
+    en: "The Workshop module disconnected. Reopen or reload it in Creative Workshop, then try opening the project again.",
   },
   "workshop.manager.eyebrow": {
     zh: "Lumina Studio",
@@ -8626,6 +9146,10 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "目录签名验证失败，未显示任何模块。",
     en: "Catalog signature verification failed. No modules are shown.",
   },
+  "workshop.manager.catalogUnavailable": {
+    zh: "暂时无法加载创意工坊目录，请检查网络后重试。",
+    en: "Unable to load the Workshop catalog. Check your network and try again.",
+  },
   "workshop.manager.retry": {
     zh: "重试",
     en: "Retry",
@@ -8645,6 +9169,14 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   "workshop.manager.operationError": {
     zh: "模块操作失败，现有安装和工程数据未被替换。",
     en: "The module operation failed. Existing installation and project data were not replaced.",
+  },
+  "workshop.manager.downloadNetworkError": {
+    zh: "插件包暂时无法下载，请检查网络后重试。",
+    en: "The plugin package is temporarily unavailable. Check your network and try again.",
+  },
+  "workshop.manager.downloadTimeout": {
+    zh: "网络连接超时，请检查网络后重试。",
+    en: "The connection timed out. Check your network and try again.",
   },
   "workshop.manager.recipeImportSaveError": {
     zh: "无法把分享配方交给模块；转换器内容仍然可用。",
@@ -8750,13 +9282,49 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     zh: "将图像交给转换器",
     en: "Hand images to the converter",
   },
+  "workshop.manager.permission.material.import": {
+    zh: "经你确认后导入耗材到耗材库",
+    en: "Import materials into the material library after you confirm",
+  },
+  "workshop.materialImport.title": {
+    zh: "导入耗材",
+    en: "Import material",
+  },
+  "workshop.materialImport.description": {
+    zh: "此模块请求把一个耗材归档导入你的耗材库。Lumina 会先校验归档，失败时不会留下任何改动。",
+    en: "This module asks to import one material archive into your material library. Lumina validates the archive first and leaves no changes if the import fails.",
+  },
+  "workshop.materialImport.module": {
+    zh: "模块",
+    en: "Module",
+  },
+  "workshop.materialImport.publisher": {
+    zh: "发布者",
+    en: "Publisher",
+  },
+  "workshop.materialImport.review": {
+    zh: "审核等级",
+    en: "Review level",
+  },
+  "workshop.materialImport.file": {
+    zh: "文件",
+    en: "File",
+  },
+  "workshop.materialImport.summary": {
+    zh: "由模块提供的说明（Lumina 未核实）",
+    en: "Provided by the module (not verified by Lumina)",
+  },
+  "workshop.materialImport.confirm": {
+    zh: "导入",
+    en: "Import",
+  },
   "workshop.manager.uninstallTitle": {
     zh: "卸载模块",
     en: "Uninstall module",
   },
   "workshop.manager.uninstallDescription": {
-    zh: "默认只删除模块代码并保留本地工程。删除工程需要单独确认。",
-    en: "By default, only module code is removed and local projects are retained. Deleting projects requires separate confirmation.",
+    zh: "卸载会删除这个模块，本地工程默认保留。",
+    en: "Uninstalling removes this module. Its local projects are kept by default.",
   },
   "workshop.manager.deleteProjects": {
     zh: "同时删除本地工程",
@@ -8777,6 +9345,674 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   "workshop.manager.license": {
     zh: "许可证",
     en: "License",
+  },
+  "workshop.manager.view.storage": {
+    zh: "存储",
+    en: "Storage",
+  },
+  "workshop.manager.deleteTaskData": {
+    zh: "同时删除原图副本和处理结果",
+    en: "Also delete source-image copies and results",
+  },
+  "workshop.manager.retainModels": {
+    zh: "保留已下载的模型，重装时直接复用",
+    en: "Keep downloaded models to reuse if you reinstall",
+  },
+  "workshop.manager.uninstallBackendNote": {
+    zh: "后端的运行环境会一并删除，其他模块仍在用的部分除外。保留的原图副本和处理结果会在任务完成 14 天后自动删除。",
+    en: "The backend's environment is removed too, except parts other modules still use. If you keep source-image copies and results, they're deleted automatically 14 days after their task finished.",
+  },
+  "workshop.backend.setupTitle": {
+    zh: "运行本机后端",
+    en: "Run a local backend",
+  },
+  "workshop.backend.setupIntro": {
+    zh: "{name} 需要在这台电脑上运行后端程序。Lumina 会先下载所需组件，之后后端只在有任务时启动，空闲后自动停止。",
+    en: "{name} needs to run a backend program on this computer. Lumina downloads what it needs first. After that, the backend starts only when there's a task and stops when idle.",
+  },
+  "workshop.backend.review.official": {
+    zh: "官方模块：已与创意工坊目录核对。",
+    en: "Official module: verified against the Workshop catalog.",
+  },
+  "workshop.backend.review.reviewed": {
+    zh: "社区模块：此版本已通过审核。",
+    en: "Community module: this version has been reviewed.",
+  },
+  "workshop.backend.review.unreviewed": {
+    zh: "未审核：此版本没有审核记录。",
+    en: "Unreviewed: this version has no review record.",
+  },
+  "workshop.backend.capabilities": {
+    zh: "模块声明",
+    en: "Module declaration",
+  },
+  "workshop.backend.noCapabilities": {
+    zh: "模块声明不会联网、启动其他程序或访问任务文件夹以外的文件。",
+    en: "The module declares that it will not access the network, start other programs, or access files outside its task folder.",
+  },
+  "workshop.backend.capability.network": {
+    zh: "联网",
+    en: "Network access",
+  },
+  "workshop.backend.capability.subprocess": {
+    zh: "启动其他程序",
+    en: "Running other programs",
+  },
+  "workshop.backend.capability.external-files": {
+    zh: "访问任务文件夹以外的文件",
+    en: "Files outside its task folder",
+  },
+  "workshop.backend.footprint": {
+    zh: "下载与磁盘占用",
+    en: "Download and disk space",
+  },
+  "workshop.backend.newDownload": {
+    zh: "需要下载约 {bytes}",
+    en: "About {bytes} to download",
+  },
+  "workshop.backend.newDownloadPartial": {
+    zh: "已知需下载约 {bytes}，总量待确认",
+    en: "About {bytes} of known downloads. The total is still being determined.",
+  },
+  "workshop.backend.environmentReused": {
+    zh: "本机已有相同的运行环境，直接复用，不用再下载运行库。",
+    en: "The same environment is already on this computer and will be reused; no libraries need downloading.",
+  },
+  "workshop.backend.dependencies": {
+    zh: "运行库：{packages} 个，其中 {shared} 个本机已有；需下载约 {bytes}",
+    en: "Libraries: {packages}, {shared} already on this computer; about {bytes} to download",
+  },
+  "workshop.backend.unknownSizes": {
+    zh: "{count} 个运行库没有标明大小，安装后会显示实际占用。",
+    en: "Libraries without a listed size: {count}. Actual disk use is shown after installing.",
+  },
+  "workshop.backend.interpreter": {
+    zh: "需要下载 Python {version}（各模块共用，占用约 {bytes}）",
+    en: "Python {version} will be downloaded (shared by all modules, about {bytes} on disk)",
+  },
+  "workshop.backend.model": {
+    zh: "模型 {file}（{bytes}，许可：{license}）",
+    en: "Model {file} ({bytes}, license: {license})",
+  },
+  "workshop.backend.shared": {
+    zh: "已在本机",
+    en: "Already on this computer",
+  },
+  "workshop.backend.variantsAvailable": {
+    zh: "可选加速（{names}）开启后才下载；不开启时用 CPU 运行。",
+    en: "Optional acceleration ({names}) downloads only if you turn it on; otherwise the backend runs on the CPU.",
+  },
+  "workshop.backend.blocked": {
+    zh: "此版本已被创意工坊目录阻止，后端无法启动。你的数据会保留。",
+    en: "The Workshop catalog has blocked this version, so its backend can't start. Your data is kept.",
+  },
+  "workshop.backend.platformUnsupported": {
+    zh: "这个模块的后端不支持当前系统。",
+    en: "This module's backend doesn't support this system.",
+  },
+  "workshop.backend.toolUnavailable": {
+    zh: "当前 Lumina 缺少安装后端所需的工具，无法安装后端。",
+    en: "This copy of Lumina is missing the tool needed to install backends.",
+  },
+  "workshop.backend.unreviewedWarning": {
+    zh: "后端以你的账户权限运行，可以读取、修改或删除你能访问的本地文件，也可以执行代码。仅在信任开发者时继续。",
+    en: "The backend runs with your account permissions. It can read, modify, or delete local files you can access and can execute code. Continue only if you trust the developer.",
+  },
+  "workshop.backend.unreviewedRisk": {
+    zh: "安全风险 · 未经审查的后端",
+    en: "Security risk · Unreviewed backend",
+  },
+  "workshop.backend.sources": {
+    zh: "首选下载源",
+    en: "Preferred download sources",
+  },
+  "workshop.backend.sourcePlan": {
+    zh: "预计首选下载源",
+    en: "Expected download sources",
+  },
+  "workshop.backend.sourcePlanFiles": {
+    zh: "{source} · {count} 个文件 · {size}",
+    en: "{source} · {count} file(s) · {size}",
+  },
+  "workshop.backend.sourcePending": {
+    zh: "来源待确认",
+    en: "Source pending",
+  },
+  "workshop.backend.source.tuna": {
+    zh: "清华 PyPI 镜像",
+    en: "Tsinghua PyPI mirror",
+  },
+  "workshop.backend.source.python": {
+    zh: "Python 解释器",
+    en: "Python interpreter",
+  },
+  "workshop.backend.source.wheels": {
+    zh: "Python 依赖包",
+    en: "Python dependencies",
+  },
+  "workshop.backend.source.models": {
+    zh: "模型",
+    en: "Models",
+  },
+  "workshop.backend.source.artifacts": {
+    zh: "附加文件",
+    en: "Additional files",
+  },
+  "workshop.backend.source.auto": {
+    zh: "自动 · 失败后尝试备用源",
+    en: "Automatic · Try another source on failure",
+  },
+  "workshop.backend.source.original": {
+    zh: "原始地址",
+    en: "Original source",
+  },
+  "workshop.backend.artifact": {
+    zh: "附加文件 {file}（{bytes}，许可 {license}）",
+    en: "Additional file {file} ({bytes}, license {license})",
+  },
+  "workshop.backend.phase.python-download": {
+    zh: "下载 Python",
+    en: "Downloading Python",
+  },
+  "workshop.backend.phase.python-install": {
+    zh: "解包并安装 Python",
+    en: "Extracting and installing Python",
+  },
+  "workshop.backend.phase.wheel-download": {
+    zh: "下载运行库",
+    en: "Downloading libraries",
+  },
+  "workshop.backend.phase.file-download": {
+    zh: "下载模型与附加文件",
+    en: "Downloading models and additional files",
+  },
+  "workshop.backend.phase.variant-download": {
+    zh: "下载加速运行库",
+    en: "Downloading acceleration libraries",
+  },
+  "workshop.backend.phase.variant-install": {
+    zh: "安装加速运行库",
+    en: "Installing acceleration libraries",
+  },
+  "workshop.backend.variantCancelled": {
+    zh: "已取消加速准备，当前可使用 CPU。",
+    en: "Acceleration setup was cancelled. CPU remains available.",
+  },
+  "workshop.backend.retryAcceleration": {
+    zh: "重试加速安装",
+    en: "Retry acceleration setup",
+  },
+  "workshop.backend.phase.variant-check": {
+    zh: "检查加速后端",
+    en: "Checking the accelerated backend",
+  },
+  "workshop.backend.phase.complete": {
+    zh: "安装完成",
+    en: "Installation complete",
+  },
+  "workshop.backend.progress.step": {
+    zh: "第 {index}/{count} 步",
+    en: "Step {index} of {count}",
+  },
+  "workshop.backend.progress.overall": {
+    zh: "安装总进度",
+    en: "Overall installation progress",
+  },
+  "workshop.backend.progress.starting": {
+    zh: "正在准备安装",
+    en: "Preparing installation",
+  },
+  "workshop.backend.progress.currentFile": {
+    zh: "当前文件",
+    en: "Current file",
+  },
+  "workshop.backend.progress.fileIndex": {
+    zh: "第 {index}/{count} 个",
+    en: "{index} of {count}",
+  },
+  "workshop.backend.progress.phaseBytes": {
+    zh: "本阶段已下载",
+    en: "This phase",
+  },
+  "workshop.backend.progress.speed": {
+    zh: "下载速度",
+    en: "Speed",
+  },
+  "workshop.backend.progress.phaseRemaining": {
+    zh: "本阶段剩余",
+    en: "Phase time left",
+  },
+  "workshop.backend.progress.totalBytes": {
+    zh: "合计已下载",
+    en: "Total downloaded",
+  },
+  "workshop.backend.progress.totalRemaining": {
+    zh: "全部下载剩余",
+    en: "All downloads left",
+  },
+  "workshop.backend.progress.measuring": {
+    zh: "测速中",
+    en: "Measuring",
+  },
+  "workshop.backend.progress.calculating": {
+    zh: "计算中",
+    en: "Calculating",
+  },
+  "workshop.backend.progress.unknown": {
+    zh: "未知",
+    en: "Unknown",
+  },
+  "workshop.backend.progress.done": {
+    zh: "已完成",
+    en: "Done",
+  },
+  "workshop.backend.progress.downloadsDone": {
+    zh: "下载已完成",
+    en: "Downloads finished",
+  },
+  "workshop.backend.progress.etaSeconds": {
+    zh: "约 {count} 秒",
+    en: "About {count} sec",
+  },
+  "workshop.backend.progress.etaMinutes": {
+    zh: "约 {count} 分钟",
+    en: "About {count} min",
+  },
+  "workshop.backend.progress.cancelling": {
+    zh: "正在取消…",
+    en: "Cancelling…",
+  },
+  "workshop.backend.downloadFile": {
+    zh: "{file} · {source} · 第 {index}/{count} 个",
+    en: "{file} · {source} · File {index} of {count}",
+  },
+  "workshop.backend.downloadBytes": {
+    zh: "本阶段已下载 {received} / {total}",
+    en: "Downloaded in this phase {received} / {total}",
+  },
+  "workshop.backend.downloadFileBytes": {
+    zh: "当前文件已下载 {received} / {total}",
+    en: "Current file {received} / {total}",
+  },
+  "workshop.backend.downloadOverall": {
+    zh: "合计已下载 {received} / {total}",
+    en: "Total downloaded {received} / {total}",
+  },
+  "workshop.backend.downloadAbout": {
+    zh: "约 {bytes}",
+    en: "about {bytes}",
+  },
+  "workshop.backend.downloadKnownSizes": {
+    zh: "已知部分约 {bytes}",
+    en: "about {bytes} with known sizes",
+  },
+  "workshop.backend.downloadOverallEtaSeconds": {
+    zh: "全部下载约剩 {count} 秒",
+    en: "About {count} sec for all downloads",
+  },
+  "workshop.backend.downloadOverallEtaMinutes": {
+    zh: "全部下载约剩 {count} 分钟",
+    en: "About {count} min for all downloads",
+  },
+  "workshop.manager.archive.resolving": {
+    zh: "准备扩展包",
+    en: "Preparing the extension package",
+  },
+  "workshop.manager.archive.downloading": {
+    zh: "下载扩展包",
+    en: "Downloading the extension package",
+  },
+  "workshop.manager.archive.uploading": {
+    zh: "传输本地扩展包",
+    en: "Transferring the local package",
+  },
+  "workshop.manager.archive.localFile": {
+    zh: "本地文件",
+    en: "Local file",
+  },
+  "workshop.manager.archive.uploadedBytes": {
+    zh: "已传输 {received} / {total}",
+    en: "Transferred {received} / {total}",
+  },
+  "workshop.manager.archive.verifying": {
+    zh: "校验扩展包",
+    en: "Verifying the extension package",
+  },
+  "workshop.manager.archive.installing": {
+    zh: "安装扩展包",
+    en: "Installing the extension package",
+  },
+  "workshop.storage.wheelCache": {
+    zh: "已校验的运行库下载缓存 {count} 个文件，共 {bytes}",
+    en: "Verified library download cache · {count} files, {bytes}",
+  },
+  "workshop.backend.downloadSizeUnknown": {
+    zh: "总量未知",
+    en: "Unknown total",
+  },
+  "workshop.backend.downloadMeter": {
+    zh: "下载进度",
+    en: "Download progress",
+  },
+  "workshop.backend.downloadSpeed": {
+    zh: "{speed}/秒",
+    en: "{speed}/s",
+  },
+  "workshop.backend.downloadEtaSeconds": {
+    zh: "本阶段约剩 {count} 秒",
+    en: "About {count} sec left in this phase",
+  },
+  "workshop.backend.downloadEtaMinutes": {
+    zh: "本阶段约剩 {count} 分钟",
+    en: "About {count} min left in this phase",
+  },
+  "workshop.backend.downloadFileEtaSeconds": {
+    zh: "当前文件约剩 {count} 秒",
+    en: "About {count} sec left for this file",
+  },
+  "workshop.backend.downloadFileEtaMinutes": {
+    zh: "当前文件约剩 {count} 分钟",
+    en: "About {count} min left for this file",
+  },
+  "workshop.backend.acknowledgeUnreviewed": {
+    zh: "我信任发布者，允许运行未经审核的代码",
+    en: "I trust the publisher and allow this unreviewed code to run",
+  },
+  "workshop.backend.authorizeAndPrepare": {
+    zh: "允许并安装",
+    en: "Allow and install",
+  },
+  "workshop.backend.prepare": {
+    zh: "安装",
+    en: "Install",
+  },
+  "workshop.backend.preparing": {
+    zh: "正在安装后端",
+    en: "Installing the backend",
+  },
+  "workshop.backend.phase.interpreter": {
+    zh: "准备 Python",
+    en: "Setting up Python",
+  },
+  "workshop.backend.phase.environment": {
+    zh: "安装运行库",
+    en: "Installing libraries",
+  },
+  "workshop.backend.phase.models": {
+    zh: "下载模型",
+    en: "Downloading models",
+  },
+  "workshop.backend.phase.self-check": {
+    zh: "检查能否正常运行",
+    en: "Checking that it runs",
+  },
+  "workshop.backend.cancelPreparation": {
+    zh: "取消安装",
+    en: "Cancel installation",
+  },
+  "workshop.backend.prepareFailed": {
+    zh: "后端安装失败。错误代码：{code}",
+    en: "Backend installation failed. Error code: {code}",
+  },
+  "workshop.backend.statusUnavailable": {
+    zh: "暂时无法获取后端状态。",
+    en: "Backend status isn't available right now.",
+  },
+  "workshop.backend.state.unprepared": {
+    zh: "后端未安装",
+    en: "Backend not installed",
+  },
+  "workshop.backend.state.preparing": {
+    zh: "后端安装中",
+    en: "Installing backend",
+  },
+  "workshop.backend.state.prepareFailed": {
+    zh: "后端安装失败",
+    en: "Backend installation failed",
+  },
+  "workshop.backend.state.authorizationRequired": {
+    zh: "需要你重新允许后端运行",
+    en: "Backend needs your approval again",
+  },
+  "workshop.backend.state.stopped": {
+    zh: "后端已就绪，用到时自动启动",
+    en: "Backend ready; starts when needed",
+  },
+  "workshop.backend.state.starting": {
+    zh: "后端正在启动",
+    en: "Backend starting",
+  },
+  "workshop.backend.state.ready": {
+    zh: "后端空闲，稍后自动停止",
+    en: "Backend idle; stops automatically after a while",
+  },
+  "workshop.backend.state.busy": {
+    zh: "后端正在处理任务，停止会取消任务",
+    en: "Backend running a task; stopping cancels it",
+  },
+  "workshop.backend.state.stopping": {
+    zh: "后端正在停止",
+    en: "Backend stopping",
+  },
+  "workshop.backend.state.failed": {
+    zh: "后端启动失败",
+    en: "Backend failed to start",
+  },
+  "workshop.backend.prepareAction": {
+    zh: "安装后端",
+    en: "Set up backend",
+  },
+  "workshop.backend.stop": {
+    zh: "停止后端",
+    en: "Stop backend",
+  },
+  "workshop.backend.footprintMeasured": {
+    zh: "磁盘占用：新增 {new}，复用 {shared}",
+    en: "Disk use: {new} new, {shared} reused",
+  },
+  "workshop.backend.acceleration": {
+    zh: "加速",
+    en: "Acceleration",
+  },
+  "workshop.backend.cpu": {
+    zh: "仅 CPU",
+    en: "CPU only",
+  },
+  "workshop.backend.variantFailed": {
+    zh: "加速无法启用，已改用 CPU。",
+    en: "Acceleration couldn't start; using the CPU instead.",
+  },
+  "workshop.backend.stopFailed": {
+    zh: "后端未停止：{reason}",
+    en: "Backend didn't stop: {reason}",
+  },
+  "workshop.backend.accelerationFailed": {
+    zh: "加速设置未更改：{reason}",
+    en: "Acceleration wasn't changed: {reason}",
+  },
+  "workshop.backend.cancelFailed": {
+    zh: "未能取消，安装仍在继续：{reason}",
+    en: "Couldn't cancel; installation is still running: {reason}",
+  },
+  "workshop.backend.statusStale": {
+    zh: "后端状态未能刷新，可能不是最新的。",
+    en: "Couldn't refresh the backend status; it may be out of date.",
+  },
+  "workshop.backend.error.authorization": {
+    zh: "需要你重新允许后端运行。点击“安装后端”，确认后再试。",
+    en: "The backend needs your approval again. Choose “Set up backend”, confirm, then try again.",
+  },
+  "workshop.backend.error.taskActive": {
+    zh: "还有任务在运行。等任务完成或停止后端后再试。",
+    en: "A task is still running. Wait for it to finish or stop the backend, then try again.",
+  },
+  "workshop.backend.error.conflict": {
+    zh: "后端状态已变化，请查看当前状态后再试。",
+    en: "The backend's state has changed. Check it, then try again.",
+  },
+  "workshop.backend.error.gone": {
+    zh: "该项已不存在，可能已被删除或卸载。",
+    en: "This item no longer exists; it may have been deleted or uninstalled.",
+  },
+  "workshop.backend.error.network": {
+    zh: "Lumina 没有响应。请稍后重试；如果一直这样，请重启 Lumina。",
+    en: "Lumina didn't respond. Try again in a moment, or restart Lumina if this keeps happening.",
+  },
+  "workshop.backend.error.generic": {
+    zh: "操作未完成。请重试；如果问题持续，请提交反馈。",
+    en: "The action didn't complete. Try again, or submit feedback if it keeps happening.",
+  },
+  "workshop.report.title": {
+    zh: "卸载结果",
+    en: "Uninstall results",
+  },
+  "workshop.report.cleared": {
+    zh: "已删除",
+    en: "Deleted",
+  },
+  "workshop.report.shared": {
+    zh: "其他模块仍在使用",
+    en: "Still used by other modules",
+  },
+  "workshop.report.retained": {
+    zh: "按你的选择保留",
+    en: "Kept as you chose",
+  },
+  "workshop.report.failed": {
+    zh: "未能删除",
+    en: "Couldn't delete",
+  },
+  "workshop.report.none": {
+    zh: "无",
+    en: "None",
+  },
+  "workshop.report.users": {
+    zh: "使用者：{users}",
+    en: "Used by: {users}",
+  },
+  "workshop.report.willRetry": {
+    zh: "正被占用，稍后自动重试",
+    en: "In use; Lumina will retry later",
+  },
+  "workshop.report.scope": {
+    zh: "这里只列出 Lumina 管理的文件。模块写到其他位置的文件不在其中，也没有被删除。",
+    en: "This covers only files Lumina manages. Anything the module saved elsewhere isn't listed and wasn't deleted.",
+  },
+  "workshop.report.kind.module-code": {
+    zh: "模块代码",
+    en: "Module code",
+  },
+  "workshop.report.kind.projects": {
+    zh: "工程",
+    en: "Projects",
+  },
+  "workshop.report.kind.module-cache": {
+    zh: "缓存和临时文件",
+    en: "Cache and temporary files",
+  },
+  "workshop.report.kind.task-data": {
+    zh: "原图副本和处理结果",
+    en: "Source-image copies and results",
+  },
+  "workshop.report.kind.environments": {
+    zh: "运行环境",
+    en: "Environments",
+  },
+  "workshop.report.kind.environment": {
+    zh: "运行环境",
+    en: "Environment",
+  },
+  "workshop.report.kind.shared-files": {
+    zh: "共享文件",
+    en: "Shared files",
+  },
+  "workshop.report.kind.interpreters": {
+    zh: "Python",
+    en: "Python",
+  },
+  "workshop.report.kind.model": {
+    zh: "模型",
+    en: "Model",
+  },
+  "workshop.report.kind.model-files": {
+    zh: "模型副本",
+    en: "Model copies",
+  },
+  "workshop.report.kind.file": {
+    zh: "文件",
+    en: "File",
+  },
+  "workshop.storage.title": {
+    zh: "后端存储",
+    en: "Backend storage",
+  },
+  "workshop.storage.description": {
+    zh: "查看模块后端占用的空间，删除不再需要的模型和处理结果。",
+    en: "See how much space module backends use, and delete kept models or task results you no longer need.",
+  },
+  "workshop.storage.loadError": {
+    zh: "无法读取后端存储信息。",
+    en: "Couldn't load backend storage.",
+  },
+  "workshop.storage.refreshError": {
+    zh: "存储信息未能刷新，可能不是最新的。",
+    en: "Couldn't refresh storage; it may be out of date.",
+  },
+  "workshop.storage.deleteFailed": {
+    zh: "未删除：{reason}",
+    en: "Not deleted: {reason}",
+  },
+  "workshop.storage.modelCopies": {
+    zh: "模型副本：{count} 个，{bytes}（此磁盘无法共用同一份文件，每个版本各存一份）",
+    en: "Model copies: {count}, {bytes} (this drive can't share one file between versions, so each keeps its own copy)",
+  },
+  "workshop.storage.empty": {
+    zh: "模块后端还没有占用空间。",
+    en: "Module backends aren't using any space yet.",
+  },
+  "workshop.storage.environments": {
+    zh: "运行环境",
+    en: "Environments",
+  },
+  "workshop.storage.environmentRow": {
+    zh: "Python {python} · {packages} 个运行库 · 单独占用 {bytes} · 使用者：{users}",
+    en: "Python {python} · {packages} libraries · {bytes} not shared · used by: {users}",
+  },
+  "workshop.storage.noUsers": {
+    zh: "无，之后会自动删除",
+    en: "none; will be removed automatically",
+  },
+  "workshop.storage.sharedStore": {
+    zh: "共享文件：{count} 个，{bytes}",
+    en: "Shared files: {count}, {bytes}",
+  },
+  "workshop.storage.interpreters": {
+    zh: "Python 版本：{versions}",
+    en: "Python versions: {versions}",
+  },
+  "workshop.storage.retainedModels": {
+    zh: "卸载时保留的模型",
+    en: "Models kept after uninstalling",
+  },
+  "workshop.storage.delete": {
+    zh: "删除",
+    en: "Delete",
+  },
+  "workshop.storage.taskData": {
+    zh: "原图副本和处理结果",
+    en: "Source-image copies and results",
+  },
+  "workshop.storage.taskRow": {
+    zh: "{module}：{count} 个任务，{bytes}",
+    en: "{module}: {count} tasks, {bytes}",
+  },
+  "workshop.storage.retention": {
+    zh: "原图副本和处理结果会在任务完成 14 天后自动删除，也可以现在手动删除。",
+    en: "Copies and results are deleted automatically 14 days after their task finishes. You can also delete them now.",
+  },
+  "workshop.storage.pending": {
+    zh: "{count} 个文件正被占用，稍后或下次启动时会再尝试删除。",
+    en: "Files in use and not yet deleted: {count}. Lumina will retry later or at next startup.",
   },
   recipe_import_schema_newer: {
     zh: "配方版本较新，部分参数可能无法恢复",
@@ -9729,16 +10965,16 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Failed to load cloud LUT library",
   },
   lut_sync_catalog_not_configured: {
-    zh: "尚未配置云端 LUT 库。本地 LUT 仍可离线使用；配置 LUMINA_LUT_REGISTRY_URL 后会显示云端 LUT。",
-    en: "Cloud LUT registry is not configured. Local LUTs remain available offline; configure LUMINA_LUT_REGISTRY_URL to show cloud LUTs.",
+    zh: "尚未配置云端 LUT 库，本地 LUT 仍可离线使用。可在「来源设置」中选择 GitHub 目录或自定义镜像。",
+    en: "Cloud LUT catalog is not configured. Local LUTs remain available offline; choose GitHub catalog or a custom mirror in Source settings.",
   },
   lut_sync_catalog_refresh_success: {
     zh: "云端 LUT 目录已刷新。",
     en: "Cloud LUT catalog refreshed.",
   },
   lut_sync_search_placeholder: {
-    zh: "搜索名称、厂商、路径或 ID",
-    en: "Search name, maker, path, or ID",
+    zh: "搜索品牌、LUT 名称、原料颜色或作者",
+    en: "Search by brand, LUT name, or color set",
   },
   lut_sync_install_btn: {
     zh: "下载到本地",
@@ -9857,8 +11093,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Failed to load cloud material library",
   },
   mat_sync_catalog_not_configured: {
-    zh: "尚未配置云端耗材库。本地耗材库仍可离线使用；配置 LUMINA_MATERIAL_REGISTRY_URL 后会显示云端耗材。",
-    en: "Cloud material registry is not configured. The local material library remains available offline; configure LUMINA_MATERIAL_REGISTRY_URL to show cloud materials.",
+    zh: "尚未配置云端耗材库，本地耗材仍可离线使用。可在「来源设置」中选择 GitHub 目录或自定义镜像。",
+    en: "Cloud material catalog is not configured. Local materials remain available offline; choose GitHub catalog or a custom mirror in Source settings.",
   },
   mat_sync_catalog_refresh_success: {
     zh: "云端耗材目录已刷新。",
@@ -9877,8 +11113,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Official",
   },
   mat_sync_search_placeholder: {
-    zh: "搜索品牌、名称、目录或 ID",
-    en: "Search brand, name, directory, or ID",
+    zh: "搜索品牌、系列、包装色号或作者",
+    en: "Search by brand, packaging name, or color code",
   },
   mat_sync_filter_group_label: {
     zh: "云端耗材筛选",
@@ -9945,8 +11181,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Installed",
   },
   mat_sync_catalog_state_update_available: {
-    zh: "有新版本",
-    en: "Update available",
+    zh: "与本地当前版本不同",
+    en: "Different from your current version",
   },
   mat_sync_catalog_state_local_available: {
     zh: "本地已有版本",
@@ -9958,7 +11194,7 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   },
   mat_sync_history_hint: { zh: "按本地安装时间查看版本，选择要恢复的版本。", en: "Versions are listed by local installation date. Select a version to restore." },
   mat_sync_history_unknown_date: { zh: "日期未知", en: "Date unknown" },
-  mat_sync_history_current: { zh: "当前使用", en: "Current" },
+  mat_sync_history_current: { zh: "本地当前版本", en: "Current local version" },
   mat_sync_history_previous: { zh: "历史版本", en: "Previous version" },
   mat_sync_history_empty: { zh: "暂无可恢复的本地历史版本", en: "No local history available to restore" },
   mat_sync_history_close: { zh: "关闭", en: "Close" },
@@ -10172,8 +11408,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Failed to load material library",
   },
   mat_gradient_library_empty: {
-    zh: "还没有已保存的耗材档案。先在「梯度卡提取」里保存一个耗材。",
-    en: "No saved material archives yet. Save one from Gradient Card Extract first.",
+    zh: "还没有已保存的耗材档案。先查找现成档案，或用梯度卡自行建档。",
+    en: "No saved material profiles yet. Find existing profiles or create your own with gradient cards.",
   },
   mat_gradient_library_updated_at_label: {
     zh: "最近更新",
@@ -10214,6 +11450,18 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   mat_gradient_library_fit_error_label: {
     zh: "拟合误差",
     en: "Fit Error",
+  },
+  mat_gradient_library_card_official: {
+    zh: "官方",
+    en: "Official",
+  },
+  mat_gradient_library_card_self_calibrated: {
+    zh: "自测校准",
+    en: "Self-calibrated",
+  },
+  mat_gradient_library_card_used_count: {
+    zh: "已用 {count} 次",
+    en: "Used {count}×",
   },
   mat_gradient_library_layer_height_label: {
     zh: "采集层高",
@@ -10790,8 +12038,8 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Color settings: choose Material Archive",
   },
   tutorial_step_source_body: {
-    zh: "在这里选「耗材档案」：颜色和过渡通常比经典 LUT 更好，耗材也能自由搭配，不需要整套同品牌。经典 LUT 适合已经有现成 LUT 的用户。",
-    en: "Choose Material Archive here: colors and transitions are usually better than with a Classic LUT, and you can mix materials freely instead of needing a full set from one brand. Classic LUT is for people who already have a LUT.",
+    zh: "推荐选「耗材档案」：每种耗材单独建档，之后自由搭配，可以使用不同品牌的兼容耗材。先找现成档案，没有同款再打印梯度卡。已有经典 LUT 也可以继续使用。",
+    en: "Material profiles are recommended: profile each filament separately, then freely combine compatible filaments from different brands. Look for existing profiles first; print gradient cards when there is no match. You can also continue using your Classic LUTs.",
   },
   tutorial_step_device_title: {
     zh: "先选好打印机和打印板",
@@ -10946,16 +12194,16 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
     en: "Can't find your filament?",
   },
   tutorial_step_materials_missing_body: {
-    zh: "到「耗材管理 → 云端耗材库」下载。如果云端耗材库不可用（例如从 GitHub 源码自行部署、没有配置云端地址），就用「梯度卡生成」打印梯度卡，再在「梯度卡提取」里为自己的耗材建档。",
-    en: "Download it from Material Management → Cloud Material Library. If the cloud library isn't available (for example a self-hosted build from the GitHub source with no registry configured), print a gradient card with Gradient Generator and create a profile for your filament in Gradient Extractor.",
+    zh: "在选择器里打开云端目录，核对品牌、系列、色号和层高，再下载需要的档案。打包版还可以从离线包挑选。没有同款时，生成并打印黑白梯度卡，上传照片提取，再加入当前配色。",
+    en: "Open the cloud catalog in the picker. Check the brand, series, color code and layer height, then download the profiles you need. Packaged editions also offer an offline pack. If there is no match, print black and white gradient cards, extract their photos and add the profile to your palette.",
   },
   tutorial_step_layer_height_title: {
-    zh: "层高保持 0.08 mm",
-    en: "Keep the layer height at 0.08 mm",
+    zh: "层高与耗材档案保持一致",
+    en: "Match the profile's layer height",
   },
   tutorial_step_layer_height_body: {
-    zh: "软件内置的耗材档案都是按 0.08 mm 层高校准的，保持默认最准确。改用其他层高，需要用那个层高重新打印梯度卡、校准耗材，否则颜色会有偏差。\n切片软件里的层高也要保持一致。",
-    en: "The built-in material profiles are calibrated at 0.08 mm, so the default is the most accurate. To use another layer height, print new gradient cards at that height and recalibrate your materials, or the colors will be off.\nKeep the same layer height in your slicer.",
+    zh: "查看所选档案的校准层高，并在这里和切片软件里使用相同层高。改用其他层高时，先找对应档案；没有时，再按目标层高打印梯度卡校准。",
+    en: "Check the selected profiles' calibration layer height and use it here and in your slicer. For a different layer height, look for matching profiles first; if none exist, print and calibrate gradient cards at that height.",
   },
   tutorial_step_layer_count_title: {
     zh: "叠色层数：7–8 层就够",
@@ -11040,5 +12288,349 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   tutorial_step_help_body: {
     zh: "设置项旁边的问号图标可以查看说明和在线文档；右上角这个菜单里的“反馈问题”可以把问题发给开发者。\n想再看一遍这份引导，随时打开这个菜单选择“新手引导”。祝打印顺利！",
     en: "The question-mark icons next to settings show explanations and link to the online docs, and Report a bug in this menu at the top right sends problems to the developers.\nTo see this tour again, open this menu and choose Beginner tour any time. Happy printing!",
+  },
+  material_workbench_materials_header: {
+    zh: "耗材组合",
+    en: "Material combination",
+  },
+  material_workbench_layers_header: {
+    zh: "层数设置",
+    en: "Layers",
+  },
+  material_workbench_use_converter: {
+    zh: "使用转换器当前选择",
+    en: "Use converter selection",
+  },
+  material_workbench_empty_hint: {
+    zh: "请先选择至少一种耗材。",
+    en: "Select at least one material first.",
+  },
+  material_gamut_title: {
+    zh: "色域覆盖",
+    en: "Gamut coverage",
+  },
+  material_gamut_description: {
+    zh: "查看这个耗材组合能打印出 sRGB 中多大比例的颜色，以及每种耗材的贡献。",
+    en: "See how much of the sRGB color range this material combination can print, and what each material adds.",
+  },
+  material_gamut_calculate: {
+    zh: "计算覆盖率",
+    en: "Calculate coverage",
+  },
+  material_gamut_calculating: {
+    zh: "正在计算…",
+    en: "Calculating…",
+  },
+  material_gamut_empty_state: {
+    zh: "选择耗材组合后点击“计算覆盖率”。",
+    en: "Choose a material combination, then select “Calculate coverage”.",
+  },
+  material_gamut_stale_hint: {
+    zh: "设置已更改，下方结果对应的是之前的组合。",
+    en: "Settings changed. The results below are for the previous combination.",
+  },
+  material_gamut_dynamic_first_run_hint: {
+    zh: "动态模式首次计算需要构建候选目录，可能需要 10–30 秒；结果会保存，转换时直接复用。",
+    en: "The first dynamic calculation builds the candidate catalog, which can take 10–30 s. It is saved and reused by conversion.",
+  },
+  material_gamut_failed: {
+    zh: "覆盖率计算失败：{message}",
+    en: "Coverage calculation failed: {message}",
+  },
+  material_gamut_result_label: {
+    zh: "sRGB 覆盖率",
+    en: "sRGB coverage",
+  },
+  material_gamut_result_detail: {
+    zh: "触达 {reached} / {total} 个色彩单元（每格 {cell} ΔE），共 {colors} 种可打印颜色",
+    en: "{reached} of {total} color cells reached ({cell} ΔE per cell) · {colors} printable colors",
+  },
+  material_gamut_exact_badge: {
+    zh: "候选完整",
+    en: "Complete candidates",
+  },
+  material_gamut_estimated_badge: {
+    zh: "候选近似",
+    en: "Approximate candidates",
+  },
+  material_gamut_exact_tooltip: {
+    zh: "已保留全部可能叠层的颜色。匹配误差仍采用近邻估计。",
+    en: "Colors from every possible stack are retained. Match error still uses a nearest-neighbor estimate.",
+  },
+  material_gamut_estimated_tooltip: {
+    zh: "结果基于采样或分桶后保留的候选颜色，可能遗漏可达颜色。",
+    en: "Results use sampled or bucketed candidate colors and may omit reachable colors.",
+  },
+  material_gamut_source_exhaustive_cache: {
+    zh: "来自已保存的穷举缓存",
+    en: "From the saved exhaustive cache",
+  },
+  material_gamut_source_saved_smart_cache: {
+    zh: "来自已保存的智能缓存（{budget}）",
+    en: "From the saved smart cache ({budget})",
+  },
+  material_gamut_source_quick_sample: {
+    zh: "来自快速采样（{budget}，未保存）",
+    en: "From a quick sample ({budget}, not saved)",
+  },
+  material_gamut_source_dynamic_catalog: {
+    zh: "来自转换使用的动态层数目录",
+    en: "From the dynamic-layer catalog conversion uses",
+  },
+  material_gamut_accuracy_header: {
+    zh: "匹配误差估计",
+    en: "Estimated match error",
+  },
+  material_gamut_accuracy_description: {
+    zh: "以邻近可打印颜色估计平均色差（ΔE00），越小越接近；不保证为全局最小色差。",
+    en: "Average ΔE00 estimated from nearby printable colors. Lower is closer; this is not a guaranteed global minimum.",
+  },
+  material_gamut_group_all: {
+    zh: "全部 sRGB",
+    en: "All sRGB",
+  },
+  material_gamut_group_neutral: {
+    zh: "灰、黑、白",
+    en: "Greys, black & white",
+  },
+  material_gamut_group_dark: {
+    zh: "暗色",
+    en: "Dark colors",
+  },
+  material_gamut_group_skin: {
+    zh: "肤色",
+    en: "Skin tones",
+  },
+  material_gamut_group_vivid: {
+    zh: "鲜艳色",
+    en: "Vivid colors",
+  },
+  material_gamut_group_short_neutral: {
+    zh: "灰黑白",
+    en: "Neutrals",
+  },
+  material_gamut_group_short_dark: {
+    zh: "暗色",
+    en: "Dark",
+  },
+  material_gamut_group_short_skin: {
+    zh: "肤色",
+    en: "Skin",
+  },
+  material_gamut_group_short_vivid: {
+    zh: "鲜艳色",
+    en: "Vivid",
+  },
+  material_gamut_delta_e_unit: {
+    zh: "ΔE",
+    en: "ΔE",
+  },
+  material_gamut_no_printable_colors: {
+    zh: "无可打印颜色",
+    en: "Nothing printable",
+  },
+  material_gamut_lightness_range: {
+    zh: "L* {darkest} – {lightest}",
+    en: "L* {darkest} – {lightest}",
+  },
+  material_gamut_lightness_label: {
+    zh: "可打印亮度",
+    en: "Printable lightness",
+  },
+  material_gamut_lightness_black: {
+    zh: "黑",
+    en: "Black",
+  },
+  material_gamut_lightness_white: {
+    zh: "白",
+    en: "White",
+  },
+  material_gamut_layer_caps_header: {
+    zh: "层数越多，颜色越多",
+    en: "More layers, more colors",
+  },
+  material_gamut_layer_caps_description: {
+    zh: "叠层最多使用该层数时的覆盖率。",
+    en: "Coverage when no stack is thicker than this.",
+  },
+  material_gamut_layer_cap_label: {
+    zh: "最多 {count} 层",
+    en: "Up to {count} layers",
+  },
+  material_gamut_contrib_header: {
+    zh: "各耗材的贡献",
+    en: "Contribution of each material",
+  },
+  material_gamut_contrib_description: {
+    zh: "去掉某个耗材后各类颜色变差多少（在 {layers} 层下比较）。数字是色差增加量，底色越深损失越大。",
+    en: "How much worse each color group gets without a material (compared at {layers} layers). Numbers are the rise in ΔE; darker cells mean a bigger loss.",
+  },
+  material_gamut_contrib_loading: {
+    zh: "正在逐个比较耗材…",
+    en: "Comparing materials one by one…",
+  },
+  material_gamut_contrib_failed: {
+    zh: "耗材贡献计算失败，请重试。",
+    en: "Could not compare the materials. Try again.",
+  },
+  material_gamut_contrib_baseline: {
+    zh: "全部耗材",
+    en: "All materials",
+  },
+  material_gamut_contrib_col_material: {
+    zh: "耗材",
+    en: "Material",
+  },
+  material_gamut_contrib_col_darkest: {
+    zh: "最暗 L*",
+    en: "Darkest L*",
+  },
+  material_gamut_contrib_col_coverage: {
+    zh: "覆盖率",
+    en: "Coverage",
+  },
+  material_gamut_contrib_no_change: {
+    zh: "—",
+    en: "—",
+  },
+  material_gamut_charts_header: {
+    zh: "色彩分布",
+    en: "Color distribution",
+  },
+  material_cache_title: {
+    zh: "求解缓存",
+    en: "Solver cache",
+  },
+  material_cache_description: {
+    zh: "提前构建并保存候选颜色，转换时直接复用，避免首次转换时等待构建。",
+    en: "Build and save candidate colors ahead of time so conversions reuse them instead of building them on the first run.",
+  },
+  material_cache_dynamic_title: {
+    zh: "动态层数缓存",
+    en: "Dynamic layer cache",
+  },
+  material_cache_dynamic_description: {
+    zh: "动态层数会为范围内的每个层数构建候选，再用基板耗材补齐并合并成一个目录。预构建会同时保存这两部分，之后转换只需读取。",
+    en: "Dynamic layer mode builds candidates for every layer count in the range, pads them with the backing material, and merges them into one catalog. Preparing saves both, so conversions only need to load them.",
+  },
+  material_cache_dynamic_status_checking: {
+    zh: "检查中…",
+    en: "Checking…",
+  },
+  material_cache_dynamic_status_ready: {
+    zh: "已就绪",
+    en: "Ready",
+  },
+  material_cache_dynamic_status_missing: {
+    zh: "未预构建",
+    en: "Not prepared",
+  },
+  material_cache_dynamic_status_error: {
+    zh: "无法读取",
+    en: "Unavailable",
+  },
+  material_cache_dynamic_layers_label: {
+    zh: "已保存的逐层候选",
+    en: "Saved per-layer candidates",
+  },
+  material_cache_dynamic_layers_value: {
+    zh: "{saved} / {total} 个层数",
+    en: "{saved} of {total} layer counts",
+  },
+  material_cache_dynamic_catalog_label: {
+    zh: "合并目录",
+    en: "Merged catalog",
+  },
+  material_cache_dynamic_catalog_value: {
+    zh: "{size} MB · {time}",
+    en: "{size} MB · {time}",
+  },
+  material_cache_dynamic_catalog_missing: {
+    zh: "未保存",
+    en: "Not saved",
+  },
+  material_cache_dynamic_partial_hint: {
+    zh: "合并目录未保存，但已有 {saved} 个层数的候选可复用，转换时只需重新合并（约数秒）。",
+    en: "The merged catalog isn't saved, but candidates for {saved} layer counts can be reused, so conversion only re-merges them (a few seconds).",
+  },
+  material_cache_dynamic_prepare_button: {
+    zh: "预构建",
+    en: "Prepare",
+  },
+  material_cache_dynamic_preparing: {
+    zh: "正在预构建…",
+    en: "Preparing…",
+  },
+  material_cache_dynamic_prepare_hint: {
+    zh: "通常需要 10–40 秒，取决于耗材数量和层数范围。",
+    en: "Usually takes 10–40 s, depending on the number of materials and the layer range.",
+  },
+  material_cache_dynamic_prepared: {
+    zh: "预构建完成，用时 {seconds} 秒。",
+    en: "Prepared in {seconds} s.",
+  },
+  material_cache_dynamic_already_prepared: {
+    zh: "已经预构建过，无需重建。",
+    en: "Already prepared. Nothing to rebuild.",
+  },
+  material_cache_dynamic_delete_button: {
+    zh: "删除预构建缓存",
+    en: "Delete prepared cache",
+  },
+  material_cache_dynamic_deleted: {
+    zh: "预构建缓存已删除。",
+    en: "Prepared cache deleted.",
+  },
+  material_cache_dynamic_nothing_deleted: {
+    zh: "没有可删除的预构建缓存，手动智能缓存已保留。",
+    en: "No prepared cache to delete. Manual smart caches were kept.",
+  },
+  material_cache_dynamic_confirm_delete: {
+    zh: "删除为这组设置预构建的合并目录和逐层候选？下次转换会按需重新构建（首次会变慢）。",
+    en: "Delete the merged catalog and per-layer candidates prepared for these settings? The next conversion rebuilds what it needs (slower the first time).",
+  },
+  material_cache_dynamic_failed: {
+    zh: "操作失败，请检查耗材与缓存目录后重试。",
+    en: "The operation failed. Check the materials and cache storage, then try again.",
+  },
+  basic_material_cache_status_line_checking: {
+    zh: "正在检查缓存…",
+    en: "Checking caches…",
+  },
+  basic_material_cache_status_line_dynamic_ready: {
+    zh: "动态层数缓存已就绪",
+    en: "Dynamic layer cache ready",
+  },
+  basic_material_cache_status_line_dynamic_partial: {
+    zh: "部分已缓存：首次转换需重新合并（约数秒）",
+    en: "Partly cached: the first conversion re-merges candidates (a few seconds)",
+  },
+  basic_material_cache_status_line_dynamic_missing: {
+    zh: "未预构建：首次转换会多花约 10–30 秒",
+    en: "Not prepared: the first conversion takes about 10–30 s longer",
+  },
+  basic_material_cache_status_line_fixed_exhaustive: {
+    zh: "使用已保存的穷举缓存",
+    en: "Using the saved exhaustive cache",
+  },
+  basic_material_cache_status_line_fixed_smart: {
+    zh: "使用已保存的智能缓存（{budget} 个候选）",
+    en: "Using a saved smart cache ({budget} candidates)",
+  },
+  basic_material_cache_status_line_fixed_missing: {
+    zh: "无已保存缓存：转换时临时采样 1M 个候选",
+    en: "No saved cache: conversion samples 1M candidates on the fly",
+  },
+  basic_material_cache_status_line_error: {
+    zh: "无法读取缓存状态",
+    en: "Cache status unavailable",
+  },
+  basic_material_cache_manage_button: {
+    zh: "管理缓存",
+    en: "Manage caches",
+  },
+  basic_material_gamut_button: {
+    zh: "查看色域",
+    en: "View gamut",
   },
 };

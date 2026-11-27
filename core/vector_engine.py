@@ -56,6 +56,7 @@ from shapely.geometry import (
     Polygon,
     box,
 )
+from shapely.geometry.base import BaseGeometry
 from shapely import affinity
 try:
     from shapely import get_num_coordinates
@@ -91,6 +92,7 @@ except ImportError:  # Shapely < 2.1; keep the old union path available.
 
 from api.structured_logging import get_logger
 from config import PrinterConfig, ColorSystem, VectorConfig
+from core.print_layers import resolve_coating_height_mm, resolve_layer_height_mm
 from core import geos_buffer_fast
 from core import native_svg_adapter
 from core.svg_arc_geometry import parse_svg_document, parse_svg_path
@@ -100,6 +102,7 @@ from core.svg_coordinate_domain import (
     SvgCoordinateDomain,
     project_print_regions,
     prepare_print_slabs,
+    should_mirror_vector_export,
 )
 from core.errors import CoreDependencyError
 from core.layered_coordinate_domain import (
@@ -269,6 +272,57 @@ def _union_run_group_geometries(geometries):
         except VECTOR_HANDLED_ERRORS:
             pass
     return unary_union(geometries)
+
+
+def _build_face_up_coating_slabs(
+    surface_slabs: list[dict],
+    structure: VectorStructurePlan,
+    *,
+    layer_height_mm: float,
+    coating_height_mm: float,
+    outline_top_mm: float,
+    scale_factor: float,
+    print_grid_mm: float | None,
+) -> list[dict]:
+    """Cover each part of the artwork at its highest occupied layer."""
+    envelope = {"geometry": structure.in_units(structure.envelope, scale_factor)}
+    body_slabs = list(surface_slabs)
+    if not structure.outline.is_empty:
+        body_slabs.append({
+            "geometry": structure.in_units(structure.outline, scale_factor),
+            "z_offset": 0.0,
+            "height": outline_top_mm,
+        })
+    if print_grid_mm is not None:
+        prepare_print_slabs([envelope, *body_slabs], mm_per_unit=scale_factor, grid_mm=print_grid_mm)
+
+    roof_layers: dict[int, list[BaseGeometry]] = {}
+    for slab in body_slabs:
+        geometry = slab["geometry"]
+        if not geometry.is_empty:
+            roof_layer = round((slab["z_offset"] + slab["height"]) / layer_height_mm)
+            roof_layers.setdefault(roof_layer, []).append(geometry)
+
+    coating_slabs = []
+    remaining = envelope["geometry"]
+    precision = float(get_precision(remaining))
+    for roof_layer in sorted(roof_layers, reverse=True):
+        roof = _union_run_group_geometries(roof_layers[roof_layer])
+        covered = VectorProcessor._extract_polygonal_geometry(
+            grid_intersection(remaining, roof, grid_size=precision),
+        )
+        if covered is None:
+            continue
+        coating_slabs.append({
+            "geometry": covered,
+            "z_offset": roof_layer * layer_height_mm,
+            "height": coating_height_mm,
+            **({PRINT_GRID_KEY: print_grid_mm} if print_grid_mm is not None else {}),
+        })
+        remaining = grid_difference(remaining, covered, grid_size=precision)
+        if remaining.is_empty:
+            break
+    return coating_slabs
 
 
 def _union_occluder_geometries(geometries):
@@ -5288,14 +5342,7 @@ class VectorProcessor:
         is_single_sided = (
             "单面" in structure_mode_value or "Single" in structure_mode_value
         )
-        try:
-            layer_h = float(
-                getattr(self, "layer_height_mm", PrinterConfig.LAYER_HEIGHT)
-            )
-        except (TypeError, ValueError):
-            layer_h = float(PrinterConfig.LAYER_HEIGHT)
-        if not math.isfinite(layer_h) or layer_h <= 0:
-            layer_h = float(PrinterConfig.LAYER_HEIGHT)
+        layer_h = resolve_layer_height_mm({"layer_height_mm": getattr(self, "layer_height_mm", None)})
 
         display_layer_count = int(num_layers)
         if display_layer_count <= 0:
@@ -5418,7 +5465,11 @@ class VectorProcessor:
                 "Extended models."
             )
         mirror_transform = None
-        if is_single_sided and not is_5color and not enable_relief:
+        if should_mirror_vector_export(
+            structure_mode,
+            self.color_mode,
+            enable_relief=enable_relief,
+        ):
             mirror_transform = np.array(
                 [
                     [-1.0, 0.0, 0.0, 0.0],
@@ -5430,9 +5481,12 @@ class VectorProcessor:
         backing_layer_count = max(1, int(round(thickness_mm / layer_h)))
         backing_height = backing_layer_count * layer_h
         deferred_vector_slabs = False
+        relief_surface_slabs: list[dict] | None = (
+            [] if enable_coating and relief_replaces_uniform_backing else None
+        )
 
         t0 = time.perf_counter()
-        if enable_relief and is_single_sided and not is_5color:
+        if relief_replaces_uniform_backing:
             meshes_by_slot = self._build_relief_meshes(
                 matched_shapes=matched_shapes,
                 num_layers=num_layers,
@@ -5451,6 +5505,7 @@ class VectorProcessor:
                 fridge_magnets=fridge_magnets,
                 merge_backing_into_material=merge_backing_into_material,
                 geometry_policy=geometry_policy,
+                surface_slabs=relief_surface_slabs,
             )
         elif is_5color:
             meshes_by_slot = self._run_length_extrude(
@@ -5503,7 +5558,7 @@ class VectorProcessor:
 
         backing_sil = None
         if (
-            not (enable_relief and is_single_sided and not is_5color)
+            not relief_replaces_uniform_backing
             and thickness_mm > 0
             and silhouette is not None
             and not silhouette.is_empty
@@ -5511,7 +5566,8 @@ class VectorProcessor:
             _log.debug("Generating backing: %s layers (%smm)", backing_layer_count, thickness_mm)
             backing_sil = silhouette
             backing_height = backing_layer_count * layer_h
-            gap_offset = BASE_COLOR_GAP_MM if not is_5color else 0.0
+            # Coated parts share one exact Z partition with the optical shells.
+            gap_offset = 0.0 if is_5color or enable_coating else BASE_COLOR_GAP_MM
             outer_side = "low" if is_5color else "high"
             cavity_specs = []
             if enable_fridge_magnet:
@@ -5583,50 +5639,47 @@ class VectorProcessor:
 
         t0 = time.perf_counter()
         if enable_coating and silhouette is not None and not silhouette.is_empty:
-            coating_sil = structure.in_units(structure.envelope, scale_factor)
-            try:
-                requested_coating_height = float(coating_height_mm)
-            except (TypeError, ValueError):
-                requested_coating_height = layer_h
-            if not np.isfinite(requested_coating_height) or requested_coating_height <= 0:
-                requested_coating_height = layer_h
-            coating_layers = max(1, int(round(requested_coating_height / layer_h)))
-            coating_height = coating_layers * layer_h
+            coating_height = resolve_coating_height_mm(coating_height_mm)
             coating_name = "Coating"
-            coating_z_offsets = [-coating_height]
-            if is_double_sided and not is_5color:
-                coating_z_offsets.append(
-                    (2 * num_layers + backing_layer_count) * layer_h
+            if is_5color or relief_surface_slabs is not None:
+                print_grid_mm = (
+                    geometry_grid_mm
+                    if isinstance(getattr(analysis, "svg_coordinate_domain", None), SvgCoordinateDomain)
+                    else next(iter(prepared_grids), None)
                 )
-            if deferred_vector_slabs:
-                meshes_by_slot[coating_name] = {
-                    "slabs": [
-                        {
-                            "geometry": coating_sil,
-                            "height": coating_height,
-                            "z_offset": z_offset,
-                        }
-                        for z_offset in coating_z_offsets
-                    ],
-                    "mat_id": max(num_channels, len(slot_names)),
-                }
+                surface_slabs = relief_surface_slabs
+                if surface_slabs is None:
+                    surface_slabs = [
+                        slab for entry in meshes_by_slot.values() for slab in entry["slabs"]
+                    ]
+                coating_slabs = _build_face_up_coating_slabs(
+                    surface_slabs, structure,
+                    layer_height_mm=layer_h, coating_height_mm=coating_height,
+                    outline_top_mm=backing_height + num_layers * layer_h,
+                    scale_factor=scale_factor, print_grid_mm=print_grid_mm,
+                )
+                del surface_slabs, relief_surface_slabs
             else:
-                coating_meshes = [
-                    self._extrude_spatial_geometry_group(
-                        coating_sil,
-                        height=coating_height,
-                        z_offset=z_offset,
-                        scale=scale_factor,
-                        stage="coating",
-                        geometry_policy=geometry_policy,
-                    )
+                coating_sil = structure.in_units(structure.envelope, scale_factor)
+                coating_z_offsets = [-coating_height]
+                if is_double_sided:
+                    coating_z_offsets.append((2 * num_layers + backing_layer_count) * layer_h)
+                coating_slabs = [
+                    {"geometry": coating_sil, "height": coating_height, "z_offset": z_offset}
                     for z_offset in coating_z_offsets
                 ]
-                meshes_by_slot[coating_name] = {
-                    "meshes": coating_meshes,
-                    "mat_id": max(num_channels, len(slot_names)),
-                }
-            meshes_by_slot[coating_name]["export_material"] = self.coating_material
+            coating_entry = {
+                "mat_id": max(num_channels, len(slot_names)),
+                "export_material": self.coating_material,
+            }
+            if deferred_vector_slabs:
+                coating_entry["slabs"] = coating_slabs
+            else:
+                coating_mesh = build_vector_layered_volume(
+                    coating_slabs, scale_mm_per_svg_unit=scale_factor, policy=geometry_policy,
+                )
+                coating_entry["meshes"] = [coating_mesh] if coating_mesh is not None else []
+            meshes_by_slot[coating_name] = coating_entry
             preview_colors[coating_name] = ([*self.coating_material.rgb, 255]
                                             if self.coating_material else [200, 200, 200, 80])
         stage_timings["coating_s"] = time.perf_counter() - t0
@@ -5764,6 +5817,7 @@ class VectorProcessor:
         fridge_magnets=None,
         merge_backing_into_material=False,
         geometry_policy: VectorLayerGeometryPolicy | None = None,
+        surface_slabs: list[dict] | None = None,
     ):
         """Extrude existing SVG regions at configured heights.
 
@@ -5986,6 +6040,13 @@ class VectorProcessor:
                 backing_volume_slabs, mm_per_unit=geometry_scale,
                 grid_mm=float(print_grid_mm),
             )
+        if surface_slabs is not None:
+            # The materializer releases input lists as soon as each mesh is
+            # built. Retain the corresponding geometry for the coating plan.
+            surface_slabs.extend(
+                slab for entry in slabs_by_slot.values() for slab in entry["slabs"]
+            )
+            surface_slabs.extend(backing_volume_slabs)
         meshes_by_slot = VectorProcessor._materialize_vector_slabs(
             slabs_by_slot,
             scale_factor=scale_factor,
@@ -8103,9 +8164,30 @@ class VectorProcessor:
         )
         root_output_width = _finite_float(getattr(svg, "width", None), root_user_width)
         root_output_height = _finite_float(getattr(svg, "height", None), root_user_height)
+        root_output_x = _finite_float(getattr(svg, "x", None), 0.0)
+        root_output_y = _finite_float(getattr(svg, "y", None), 0.0)
+        root_output_viewport = None
+        if root_output_width > 0.0 and root_output_height > 0.0:
+            # Reified shapes already include the viewBox-to-viewport map.
+            # Resolve physical units and apply the root transform once for
+            # both viewport clipping and the final canvas bounds.
+            transform = svg.transform
+            root_output_viewport = affinity.affine_transform(
+                box(
+                    root_output_x,
+                    root_output_y,
+                    root_output_x + root_output_width,
+                    root_output_y + root_output_height,
+                ),
+                [transform.a, transform.c, transform.b, transform.d, transform.e, transform.f],
+            )
+        root_overflow = _normalize_svg_css_token(_element_value(svg, "overflow", ""))
+        root_style_overflow = _style_property(_element_value(root, "style", ""), "overflow")
+        if root_style_overflow is not None:
+            root_overflow = root_style_overflow
         root_output_viewport_clip = (
-            box(0.0, 0.0, root_output_width, root_output_height)
-            if root_output_width > 0.0 and root_output_height > 0.0
+            root_output_viewport
+            if root_overflow != "visible"
             else None
         )
 
@@ -8569,7 +8651,12 @@ class VectorProcessor:
             except TypeError:
                 return
 
-        _index_group_clip_contexts(svg)
+        # Preserve legacy root overflow when unspecified; explicit clipping
+        # must also reach direct root children, not only nested viewports.
+        _index_group_clip_contexts(
+            svg,
+            inherited_viewport_clip=root_output_viewport_clip if root_overflow else None,
+        )
         clip_target_local_bounds_cache = {}
 
         def _iter_clip_target_shapes(target):
@@ -9217,22 +9304,14 @@ class VectorProcessor:
         gx1, gy1 = max(max_xs), max(max_ys)
 
         svg_viewport_bounds = None
-        try:
-            vb = getattr(svg, "viewbox", None)
-            if vb is not None:
-                vb_x = float(getattr(vb, "x", 0) or 0)
-                vb_y = float(getattr(vb, "y", 0) or 0)
-                vb_w = float(getattr(vb, "width", 0) or 0)
-                vb_h = float(getattr(vb, "height", 0) or 0)
-                if vb_w > 0 and vb_h > 0:
-                    svg_viewport_bounds = (vb_x, vb_y, vb_w, vb_h)
-                    gx0 = min(gx0, vb_x)
-                    gy0 = min(gy0, vb_y)
-                    gx1 = max(gx1, vb_x + vb_w)
-                    gy1 = max(gy1, vb_y + vb_h)
-                    _log.debug("SVG viewBox: (%s, %s, %s, %s)", vb_x, vb_y, vb_w, vb_h)
-        except VECTOR_HANDLED_ERRORS:
-            pass
+        if getattr(svg, "viewbox", None) is not None and root_output_viewport is not None:
+            vx0, vy0, vx1, vy1 = root_output_viewport.bounds
+            svg_viewport_bounds = (vx0, vy0, vx1 - vx0, vy1 - vy0)
+            gx0 = min(gx0, vx0)
+            gy0 = min(gy0, vy0)
+            gx1 = max(gx1, vx1)
+            gy1 = max(gy1, vy1)
+            _log.debug("SVG viewport: (%s, %s, %s, %s)", *svg_viewport_bounds)
 
         real_w = gx1 - gx0
         real_h = gy1 - gy0

@@ -8,11 +8,16 @@ P06 — 热床网格渲染与最终预览输出。
 - _create_bed_mesh: 创建圆角打印热床 3D 网格（带 UV 贴图纹理）
 """
 
+import math
 import time
+import cv2
 import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
+from shapely.geometry import Polygon
 
+from core.geometry_utils import keychain_loop_footprint
+from core.preview_sizing import preview_dimensions
 from api.structured_logging import get_logger
 from config import PrinterConfig, BedManager, PREVIEW_SCALE
 
@@ -79,17 +84,17 @@ def compute_bed_model_rect(
 def render_preview(preview_rgba, loop_pos, loop_width, loop_length,
                    loop_hole, loop_angle, loop_enabled, color_conf,
                    bed_label=None, target_width_mm=None, is_dark=True):
-    """Return the raw preview image with optional keychain loop overlay.
-    返回原始预览图像，可选叠加挂件环标记。
+    """Return a bounded display image with optional keychain loop overlay.
+    返回有尺寸上限的显示图像，可选叠加挂件环标记。
 
     The bed canvas / grid / rulers were intentionally dropped per UX
     request — the 2D preview now contains only the model image itself.
-    Image dimensions therefore match ``preview_rgba`` exactly, which lets
-    the frontend hover/click mapping take the direct (raw-pixel) fast path.
+    Screen dimensions use the shared preview budget; the caller retains
+    the full ``preview_rgba`` grid for model generation and pixel editing.
 
     按 UX 要求移除了热床底板 / 网格 / 标尺，2D 预览仅输出模型本身；
-    输出图像的尺寸与 ``preview_rgba`` 一致，前端悬停/点击坐标映射会走
-    raw-pixel 直通路径。
+    显示图像使用统一尺寸上限，调用方保留完整 ``preview_rgba`` 网格用于
+    建模与像素编辑。
 
     Args:
         preview_rgba (np.ndarray | None): RGBA 预览图像 (H, W, 4)
@@ -112,26 +117,68 @@ def render_preview(preview_rgba, loop_pos, loop_width, loop_length,
     if preview_rgba is None:
         return np.zeros((1, 1, 4), dtype=np.uint8)
 
-    w = preview_rgba.shape[1] if preview_rgba.ndim >= 2 else 0
+    h, w = preview_rgba.shape[:2]
 
     if target_width_mm is not None and target_width_mm > 0 and w > 0:
         model_w_mm = float(target_width_mm)
     else:
         model_w_mm = w * PrinterConfig.NOZZLE_WIDTH
 
-    pil_img = Image.fromarray(preview_rgba, mode='RGBA').copy()
+    display_w, display_h = preview_dimensions(w, h)
+    display_rgba = preview_rgba
+    if (display_w, display_h) != (w, h):
+        # Resize before creating a display copy of the modeling grid. Nearest
+        # keeps palette colors and alpha exact, including pixel-art previews.
+        display_rgba = cv2.resize(
+            preview_rgba, (display_w, display_h), interpolation=cv2.INTER_NEAREST,
+        )
+    pil_img = Image.fromarray(display_rgba, mode='RGBA').copy()
 
     if loop_enabled and loop_pos is not None and w > 0 and model_w_mm > 0:
-        mm_per_px = model_w_mm / w
-        ppm_raw = 1.0 / mm_per_px  # pixels-per-mm in raw preview image
+        mm_per_px = model_w_mm / display_w
+        ppm_display = 1.0 / mm_per_px
+        display_loop_pos = (
+            loop_pos[0] * display_w / w,
+            loop_pos[1] * display_h / h,
+        )
         pil_img = _draw_loop_on_canvas(
-            pil_img, loop_pos, loop_width, loop_length,
+            pil_img, display_loop_pos, loop_width, loop_length,
             loop_hole, loop_angle, None, 0,
-            ppm=ppm_raw, img_offset=(0, 0),
+            ppm=ppm_display, img_offset=(0, 0),
             mm_per_px=mm_per_px,
         )
 
     return np.array(pil_img)
+
+
+def draw_keychain_footprint(
+    image: Image.Image,
+    footprint: Polygon,
+    origin: tuple[float, float],
+    pixels_per_mm: float,
+    color: tuple[int, int, int, int],
+) -> None:
+    """Composite a Y-up loop profile over the artwork without clearing its hole."""
+    x, y = origin
+    min_x, min_y, max_x, max_y = footprint.bounds
+    left = max(0, math.floor(x + min_x * pixels_per_mm))
+    right = min(image.width, math.ceil(x + max_x * pixels_per_mm) + 1)
+    top = max(0, math.floor(y - max_y * pixels_per_mm))
+    bottom = min(image.height, math.ceil(y - min_y * pixels_per_mm) + 1)
+    if left >= right or top >= bottom:
+        return
+
+    def pixels(ring):
+        return [(x + px * pixels_per_mm - left, y - py * pixels_per_mm - top) for px, py in ring.coords]
+
+    alpha = Image.new("L", (right - left, bottom - top))
+    draw = ImageDraw.Draw(alpha)
+    draw.polygon(pixels(footprint.exterior), fill=color[3])
+    for hole in footprint.interiors:
+        draw.polygon(pixels(hole), fill=0)
+    overlay = Image.new("RGBA", alpha.size, color)
+    overlay.putalpha(alpha)
+    image.alpha_composite(overlay, dest=(left, top))
 
 
 def _draw_loop_on_canvas(pil_img, loop_pos, loop_width, loop_length,
@@ -163,52 +210,13 @@ def _draw_loop_on_canvas(pil_img, loop_pos, loop_width, loop_length,
     if mm_per_px is None:
         mm_per_px = PrinterConfig.NOZZLE_WIDTH
 
-    loop_w_px = int(loop_width * ppm)
-    loop_h_px = int(loop_length * ppm)
-    hole_r_px = int(loop_hole / 2 * ppm)
-    circle_r_px = loop_w_px // 2
-
     # loop_pos is in original image pixel coords
-    cx = img_offset[0] + int(loop_pos[0] * mm_per_px * ppm)
-    cy = img_offset[1] + int(loop_pos[1] * mm_per_px * ppm)
-
-    loop_size = max(loop_w_px, loop_h_px) * 2 + 20
-    loop_layer = Image.new('RGBA', (loop_size, loop_size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(loop_layer)
-
-    lc = loop_size // 2
-    rect_h = max(1, loop_h_px - circle_r_px)
-
-    loop_color = (220, 60, 60, 200)
-    outline_color = (255, 255, 255, 255)
-
-    draw.rectangle(
-        [lc - loop_w_px // 2, lc, lc + loop_w_px // 2, lc + rect_h],
-        fill=loop_color, outline=outline_color, width=2
+    origin = (
+        img_offset[0] + loop_pos[0] * mm_per_px * ppm,
+        img_offset[1] + loop_pos[1] * mm_per_px * ppm,
     )
-
-    draw.ellipse(
-        [lc - circle_r_px, lc - circle_r_px,
-         lc + circle_r_px, lc + circle_r_px],
-        fill=loop_color, outline=outline_color, width=2
-    )
-
-    draw.ellipse(
-        [lc - hole_r_px, lc - hole_r_px,
-         lc + hole_r_px, lc + hole_r_px],
-        fill=(0, 0, 0, 0)
-    )
-
-    if loop_angle != 0:
-        loop_layer = loop_layer.rotate(
-            -loop_angle, center=(lc, lc),
-            expand=False, resample=Image.BICUBIC
-        )
-
-    paste_x = cx - lc
-    paste_y = cy - lc - rect_h // 2
-    pil_img.paste(loop_layer, (paste_x, paste_y), loop_layer)
-
+    footprint = keychain_loop_footprint(loop_width, loop_length, loop_hole, 0, 0, loop_angle)
+    draw_keychain_footprint(pil_img, footprint, origin, ppm, (220, 60, 60, 200))
     return pil_img
 
 

@@ -4,10 +4,10 @@
  */
 
 import {
-  WORKSHOP_PERMISSION_NAMES,
+  WORKSHOP_PERMISSION_NAMES as SDK_WORKSHOP_PERMISSION_NAMES,
   WORKSHOP_RPC_VERSION,
-  type WorkshopPermissionName,
-  type WorkshopRpcMethod,
+  type WorkshopPermissionName as SdkWorkshopPermissionName,
+  type WorkshopRpcMethod as SdkWorkshopRpcMethod,
   type WorkshopRpcResponse,
   type WorkshopUiState,
 } from "@lumina/workshop-sdk";
@@ -18,7 +18,6 @@ import type {
 export {
   WORKSHOP_API_VERSION,
   WORKSHOP_MANIFEST_VERSION,
-  WORKSHOP_PERMISSION_NAMES,
   WORKSHOP_RPC_VERSION,
 } from "@lumina/workshop-sdk";
 
@@ -27,12 +26,10 @@ export type {
   WorkshopColorEntry,
   WorkshopColorLibrary,
   WorkshopManifestV1,
-  WorkshopPermissionName,
   WorkshopPickedImage,
   WorkshopProjectRecord,
   WorkshopRaster,
   WorkshopRecipeSource,
-  WorkshopRpcMethod,
   WorkshopRpcRequest,
   WorkshopRpcResponse,
   WorkshopSquareGridLayout,
@@ -47,6 +44,56 @@ export interface WorkshopImageHandoff
   extends PublicWorkshopImageHandoff {
   svgBytes?: ArrayBuffer;
   recommendedTotalThicknessMm?: number;
+}
+
+/**
+ * Host-side copy of the `material.import` contract (proposed SDK 1.2.0).
+ * Remove once the host pins an SDK release that exports these identities.
+ * 宿主侧暂存 `material.import` 契约；宿主锁定包含它的 SDK 版本后删除。
+ */
+export const WORKSHOP_MATERIAL_IMPORT_PERMISSION = "material.import";
+
+/** Ready-handshake feature that reports Workshop API 1.2.0. */
+export const WORKSHOP_MATERIAL_IMPORT_FEATURE = "materials.import";
+
+export const WORKSHOP_PERMISSION_NAMES = [
+  ...SDK_WORKSHOP_PERMISSION_NAMES,
+  WORKSHOP_MATERIAL_IMPORT_PERMISSION,
+] as const;
+
+export type WorkshopPermissionName =
+  | SdkWorkshopPermissionName
+  | typeof WORKSHOP_MATERIAL_IMPORT_PERMISSION;
+
+export type WorkshopRpcMethod = SdkWorkshopRpcMethod | "material.import";
+
+/** One Stage-A material archive the module asks the host to import. */
+export interface WorkshopMaterialImportRequest {
+  archiveBytes: ArrayBuffer;
+  fileName: string;
+  /** Module-provided description; shown as such and never trusted. */
+  summary?: {
+    materials: Array<{ name: string; brand?: string; notes?: string[] }>;
+  };
+}
+
+export type WorkshopMaterialImportResult =
+  | { status: "cancelled" }
+  | {
+      status: "imported";
+      materials: Array<{ directoryName: string; name: string }>;
+    };
+
+/** Confirmation is reversible until the live SDK request commits it. */
+export interface WorkshopMaterialImportControl {
+  protocol: "lumina-workshop-rpc";
+  version: typeof WORKSHOP_RPC_VERSION;
+  kind: "control";
+  requestId: string;
+  action:
+    | "material-import-prepared"
+    | "material-import-commit"
+    | "material-import-cancel";
 }
 
 export interface WorkshopModuleIdentity {
@@ -80,6 +127,76 @@ export interface WorkshopRpcEventEnvelope {
   payload: WorkshopUiState;
 }
 
+/**
+ * Workshop API implemented by this host. 1.1.0 adds module backends and
+ * 1.2.0 adds material import; the pinned SDK package still exports 1.0.0,
+ * which frontend-only modules keep negotiating.
+ * 宿主实现的 Workshop API 版本；纯前端模块仍协商 1.0.0。
+ */
+export const HOST_WORKSHOP_API_VERSION = "1.2.0";
+
+/** Ready-handshake feature a module lists to use backend task RPC. */
+export const WORKSHOP_BACKEND_FEATURE = "backend.tasks";
+
+/**
+ * Host-owned backend task methods (Workshop API 1.1.0, public SDK 1.1.0).
+ * Eligibility comes from the version's backend declaration and consent,
+ * not from a v1 permission. 资格来自后端声明与授权，而不是 v1 权限。
+ */
+export const WORKSHOP_BACKEND_RPC_METHODS = [
+  "backend.status",
+  "backend.submit",
+  "backend.get",
+  "backend.list",
+  "backend.cancel",
+  "backend.readOutput",
+  "backend.remove",
+] as const;
+
+export type WorkshopBackendRpcMethod =
+  (typeof WORKSHOP_BACKEND_RPC_METHODS)[number];
+
+export type HostWorkshopRpcMethod =
+  | WorkshopRpcMethod
+  | WorkshopBackendRpcMethod;
+
+export type WorkshopBackendTaskStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+/** RPC shape of one host-owned backend task. */
+export interface WorkshopBackendTask {
+  taskId: string;
+  moduleVersion: string;
+  operation: string;
+  status: WorkshopBackendTaskStatus;
+  progress: { completed: number; total: number; phase: string } | null;
+  error: { code: string; message: string } | null;
+  outputs: Array<{ name: string; fileName: string; mimeType: string; bytes: number }>;
+  variant: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface WorkshopBackendInput {
+  name: string;
+  fileName: string;
+  mimeType: string;
+  bytes: ArrayBuffer;
+}
+
+export interface WorkshopBackendSubmitRequest {
+  operation: string;
+  params: Record<string, unknown>;
+  inputs: WorkshopBackendInput[];
+  idempotencyKey?: string;
+}
+
 export const WORKSHOP_RPC_METHODS = [
   "image.pick",
   "project.save",
@@ -88,20 +205,29 @@ export const WORKSHOP_RPC_METHODS = [
   "project.remove",
   "colorLibrary.read",
   "handoff.image",
+  "material.import",
   "ui.getState",
   "status.progress",
   "status.error",
   "status.diagnostics",
   "lifecycle.ready",
-] as const satisfies readonly WorkshopRpcMethod[];
+  ...WORKSHOP_BACKEND_RPC_METHODS,
+] as const satisfies readonly HostWorkshopRpcMethod[];
 
 const RPC_METHOD_SET = new Set<string>(WORKSHOP_RPC_METHODS);
+const BACKEND_METHOD_SET = new Set<string>(WORKSHOP_BACKEND_RPC_METHODS);
 const PERMISSION_SET = new Set<string>(WORKSHOP_PERMISSION_NAMES);
 
 export function isWorkshopRpcMethod(
   value: unknown,
-): value is WorkshopRpcMethod {
+): value is HostWorkshopRpcMethod {
   return typeof value === "string" && RPC_METHOD_SET.has(value);
+}
+
+export function isWorkshopBackendRpcMethod(
+  value: unknown,
+): value is WorkshopBackendRpcMethod {
+  return typeof value === "string" && BACKEND_METHOD_SET.has(value);
 }
 
 export function isWorkshopPermissionName(

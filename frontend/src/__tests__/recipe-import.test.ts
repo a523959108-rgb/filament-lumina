@@ -238,6 +238,14 @@ describe("recipe/importRecipe", () => {
   });
 
   describe("restoreConverterRecipe", () => {
+    it("restores compressed color ownership with the saved project", () => {
+      const recipe = createTestRecipe();
+      const scope = { shape: [1, 2], bits: "eJxrAAAAgQCB" };
+      recipe.recipe.converter!.color_ops.replacement_regions[0].source_scope = scope;
+      const { state } = restoreConverterRecipe(JSON.parse(JSON.stringify(recipe)), LOCAL_LUTS);
+      expect(state.replacement_regions?.[0].source_scope).toEqual(scope);
+    });
+
     it("restores all converter parameters", () => {
       const recipe = createTestRecipe();
       const { state, assetFile, warnings } = restoreConverterRecipe(recipe, LOCAL_LUTS);
@@ -393,6 +401,23 @@ describe("recipe/importRecipe", () => {
       });
     });
 
+    it("round-trips a 30-layer dynamic range without unlocking fixed layers", () => {
+      const original = {
+        ...DEFAULT_STATE, source_version: "material",
+        materialDynamicLayerCountEnabled: true, materialMinLayerCount: 12, materialMaxLayerCount: 30,
+      } as ConverterState;
+      const firstExport = exportConverterRecipe(original, DEFAULT_SETTINGS, "fp123");
+      const recipe = createTestRecipe();
+      recipe.recipe.converter = firstExport;
+      const { state } = restoreConverterRecipe(recipe, LOCAL_LUTS);
+      expect(state).toMatchObject({
+        materialDynamicLayerCountEnabled: true, materialMinLayerCount: 12,
+        materialMaxLayerCount: 30, materialLayersUnlocked: false,
+      });
+      const secondExport = exportConverterRecipe({ ...original, ...state } as ConverterState, DEFAULT_SETTINGS, "fp123");
+      expect(secondExport.source).toEqual(firstExport.source);
+    });
+
     it("deep-clones valid imported dynamic result metadata", () => {
       const recipe = createTestRecipe();
       enableDynamicMaterial(recipe);
@@ -523,6 +548,20 @@ describe("recipe/importRecipe", () => {
         warnings,
       ).toContain(RECIPE_IMPORT_WARNING_PUZZLE_CONFLICT_LOOP);
       expect(warnings).toContain(RECIPE_IMPORT_WARNING_BACK_LABELS_UNAVAILABLE);
+    });
+
+    it("keeps Large Format and disables the ring in an older conflicting recipe", () => {
+      const recipe = createTestRecipe();
+      const converter = recipe.recipe.converter!;
+      converter.puzzle!.puzzle_enabled = false;
+      converter.large_format.large_format_enabled = true;
+      converter.geometry.add_loop = true;
+      converter.geometry.loop_offset_y = -4;
+
+      const { state, warnings } = restoreConverterRecipe(recipe, LOCAL_LUTS);
+
+      expect(state).toMatchObject({ largeFormatEnabled: true, add_loop: false, loop_offset_y: -4 });
+      expect(warnings).toContain("recipe_import_warning_large_format_conflict_loop");
     });
 
     it("disables imported back-label engraving even when piece labels are enabled", () => {

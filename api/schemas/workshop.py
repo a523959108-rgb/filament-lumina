@@ -9,7 +9,7 @@ import re
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 from core.workshop.models import MODULE_ID_PATTERN, validate_semver
 
@@ -90,6 +90,9 @@ class ModuleEnabledRequest(WorkshopHttpModel):
 
 class ModuleUninstallRequest(WorkshopHttpModel):
     delete_projects: bool = False
+    # Backend data categories; defaults keep user data and reclaim programs.
+    delete_task_data: bool = False
+    retain_models: bool = False
 
 
 class LocalizedTextResponse(WorkshopHttpModel):
@@ -100,6 +103,14 @@ class LocalizedTextResponse(WorkshopHttpModel):
 class WorkshopPermissionResponse(WorkshopHttpModel):
     name: str
     reason: str
+    reason_i18n: LocalizedTextResponse | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        payload = handler(self)
+        if self.reason_i18n is None:
+            payload.pop("reason_i18n", None)
+        return payload
 
 
 class WorkshopRevocationResponse(WorkshopHttpModel):
@@ -110,6 +121,7 @@ class WorkshopRevocationResponse(WorkshopHttpModel):
 
 class WorkshopCatalogVersionResponse(WorkshopHttpModel):
     version: str
+    workshop_api_min: str
     state: Literal["active", "deprecated", "blocked"]
     permissions: tuple[WorkshopPermissionResponse, ...]
     revocation: WorkshopRevocationResponse | None
@@ -132,6 +144,27 @@ class WorkshopCatalogResponse(WorkshopHttpModel):
     modules: tuple[WorkshopCatalogModuleResponse, ...]
 
 
+class WorkshopBackendCapabilityResponse(WorkshopPermissionResponse):
+    pass
+
+
+class WorkshopBackendVariantSummary(WorkshopHttpModel):
+    id: str
+    name: LocalizedTextResponse
+    description: LocalizedTextResponse
+    platforms: tuple[str, ...]
+
+
+class WorkshopBackendSummaryResponse(WorkshopHttpModel):
+    """Static backend declaration of one installed version (manifest v2)."""
+
+    python: str
+    platforms: tuple[str, ...]
+    capabilities: tuple[WorkshopBackendCapabilityResponse, ...]
+    model_count: int
+    variants: tuple[WorkshopBackendVariantSummary, ...]
+
+
 class InstalledWorkshopVersionResponse(WorkshopHttpModel):
     version: str
     name: LocalizedTextResponse
@@ -145,6 +178,8 @@ class InstalledWorkshopVersionResponse(WorkshopHttpModel):
     details_url: str
     icon_url: str
     asset_base_url: str
+    manifest_version: int = 1
+    backend: WorkshopBackendSummaryResponse | None = None
     project_snapshot_protocol: int | None = None
     project_snapshot_schemas: tuple[str, ...] = ()
 
@@ -179,6 +214,16 @@ class WorkshopModulesResponse(WorkshopHttpModel):
     modules: tuple[InstalledWorkshopModuleResponse, ...]
 
 
+class WorkshopUninstallReportResponse(WorkshopHttpModel):
+    """Cleared, still-shared, user-retained, and not-yet-deleted content."""
+
+    cleared: tuple[dict[str, object], ...]
+    shared: tuple[dict[str, object], ...]
+    retained: tuple[dict[str, object], ...]
+    failed: tuple[dict[str, object], ...]
+
+
 class WorkshopModuleMutationResponse(WorkshopHttpModel):
     status: Literal["ok"] = "ok"
     module: InstalledWorkshopModuleResponse | None
+    uninstall_report: WorkshopUninstallReportResponse | None = None

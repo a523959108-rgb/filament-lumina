@@ -12,9 +12,11 @@ import time
 from pathlib import Path
 from typing import Annotated, NoReturn
 from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from pydantic import ValidationError
 
@@ -28,6 +30,9 @@ from api.schemas.workshop import (
     ModuleEnabledRequest,
     ModuleUninstallRequest,
     RegistryInstallRequest,
+    WorkshopBackendCapabilityResponse,
+    WorkshopBackendSummaryResponse,
+    WorkshopBackendVariantSummary,
     WorkshopCatalogModuleResponse,
     WorkshopCatalogResponse,
     WorkshopCatalogVersionResponse,
@@ -36,8 +41,16 @@ from api.schemas.workshop import (
     WorkshopModulesResponse,
     WorkshopPermissionResponse,
     WorkshopRevocationResponse,
+    WorkshopUninstallReportResponse,
 )
 from api.structured_logging import get_logger
+from api.routers.workshop_backend import raise_backend_error
+from api.workshop_install_progress import TrackArchiveInstall, get_archive_progress
+from api.workshop_runtime_service import (
+    create_workshop_installer,
+    existing_workshop_backend_runtime,
+    get_workshop_backend_runtime,
+)
 from api.workshop_seed import restore_official_workshop_seed
 from config import get_asset_path, get_workshop_data_dir
 from core.workshop import (
@@ -60,12 +73,15 @@ from core.workshop.constants import (
     MAX_TEXT_DOCUMENT_BYTES,
     WORKSHOP_API_VERSION,
 )
+from core.workshop.errors import WorkshopBackendError
+from core.workshop.install_progress import ArchiveInstallProgress, ArchiveInstallTracker
 from core.workshop.models import (
     RegistryIndex,
     RegistryModule,
     RegistryRefreshResult,
     RegistryVersion,
-    WorkshopManifestV1,
+    WorkshopManifestV2,
+    parse_workshop_manifest_json,
 )
 from core.workshop.registry_client import select_install_candidate
 
@@ -74,6 +90,9 @@ router = APIRouter(prefix="/api/workshop/v1", tags=["Creative Workshop"])
 log = get_logger(__name__)
 
 LUMINA_VERSION = "2.0.1"
+_CATALOG_UNAVAILABLE = "Unable to load the Workshop catalog. Check your network and try again."
+_REGISTRY_DOWNLOAD_UNAVAILABLE = "The plugin package is temporarily unavailable. Check your network and try again."
+_REGISTRY_DOWNLOAD_TIMED_OUT = "The connection timed out. Check your network and try again."
 _PUBLIC_ASSET_EXTENSIONS = frozenset(
     {".png", ".jpg", ".jpeg", ".webp"}
 )
@@ -112,10 +131,11 @@ _PUBLIC_ASSET_HEADERS = {
 def get_workshop_installer() -> WorkshopInstaller:
     """Build a filesystem-scoped Workshop installer.
 
-    创建限定在创意工坊数据目录内的安装器。
+    创建限定在创意工坊数据目录内的安装器；其钩子会绑定后端包身份，并保留仍被
+    后端任务使用的版本。
     """
 
-    return WorkshopInstaller(data_dir=get_workshop_data_dir())
+    return create_workshop_installer(get_workshop_data_dir())
 
 
 def get_workshop_registry_client() -> RegistryClient:
@@ -141,7 +161,7 @@ def _raise_workshop_http_error(
     event: str,
     exc: Exception,
     status_code: int,
-    detail: str,
+    detail: str | dict[str, str],
     module_id: str | None = None,
     version: str | None = None,
     log_error_message: str | None = None,
@@ -234,7 +254,7 @@ def _installed_version_response(
             "manifest.json",
             maximum_bytes=MAX_MANIFEST_BYTES,
         )
-        manifest = WorkshopManifestV1.model_validate_json(manifest_text)
+        manifest = parse_workshop_manifest_json(manifest_text)
         if manifest.id != state.module_id or manifest.version != version:
             raise ValueError("installed manifest identity mismatch")
     except (OSError, UnicodeError, ValueError, ValidationError) as exc:
@@ -256,7 +276,33 @@ def _installed_version_response(
         f"/api/workshop/v1/modules/{module_id}/{encoded_version}"
     )
     asset_base_url = f"{version_base}/assets"
+    backend = None
+    if isinstance(manifest, WorkshopManifestV2):
+        declaration = manifest.backend
+        backend = WorkshopBackendSummaryResponse(
+            python=declaration.python,
+            platforms=declaration.platforms,
+            capabilities=tuple(
+                WorkshopBackendCapabilityResponse(
+                    name=item.name, reason=item.reason,
+                    reason_i18n=_localized_response(item.reason_i18n) if item.reason_i18n else None,
+                )
+                for item in declaration.capabilities
+            ),
+            model_count=len(declaration.models),
+            variants=tuple(
+                WorkshopBackendVariantSummary(
+                    id=variant.id,
+                    name=_localized_response(variant.name),
+                    description=_localized_response(variant.description),
+                    platforms=variant.platforms,
+                )
+                for variant in declaration.variants
+            ),
+        )
     return InstalledWorkshopVersionResponse(
+        manifest_version=manifest.manifest_version,
+        backend=backend,
         version=version,
         name=_localized_response(manifest.name),
         description=_localized_response(manifest.description),
@@ -270,6 +316,7 @@ def _installed_version_response(
             WorkshopPermissionResponse(
                 name=permission.name,
                 reason=permission.reason,
+                reason_i18n=_localized_response(permission.reason_i18n) if permission.reason_i18n else None,
             )
             for permission in manifest.permissions
         ),
@@ -359,6 +406,7 @@ def _catalog_module_response(
         versions.append(
             WorkshopCatalogVersionResponse(
                 version=version.version,
+                workshop_api_min=version.workshop_api.minimum,
                 state=version.state,
                 permissions=tuple(
                     WorkshopPermissionResponse(
@@ -440,7 +488,7 @@ def workshop_catalog() -> WorkshopCatalogResponse:
             event="workshop_catalog_refresh_failed",
             exc=exc,
             status_code=503,
-            detail="No trusted Creative Workshop catalog is available.",
+            detail=_CATALOG_UNAVAILABLE,
         )
     log.info(
         "Creative Workshop catalog refreshed",
@@ -487,6 +535,7 @@ def workshop_modules() -> WorkshopModulesResponse:
 )
 async def workshop_install_local(
     archive: Annotated[UploadFile, File()],
+    progress: TrackArchiveInstall = None,
 ) -> WorkshopModuleMutationResponse:
     """Install a validated local package as an inactive candidate.
 
@@ -510,7 +559,10 @@ async def workshop_install_local(
             suffix=".lumina-workshop",
             max_bytes=MAX_PACKAGE_BYTES,
         )
-        state = get_workshop_installer().install_candidate(
+        if progress is not None:
+            progress.stage("installing")
+        state = await run_in_threadpool(
+            get_workshop_installer().install_candidate,
             archive_path,
             source="local",
             source_repository="local",
@@ -563,17 +615,31 @@ _REGISTRY_DOWNLOAD_MAX_ATTEMPTS = 2
 _REGISTRY_DOWNLOAD_RETRY_DELAY_SECONDS = 0.25
 
 
+@router.get("/install/progress/{progress_id}")
+def workshop_archive_install_progress(progress_id: UUID, response: Response) -> ArchiveInstallProgress | None:
+    response.headers["Cache-Control"] = "no-store"
+    return get_archive_progress(progress_id)
+
+
 def _download_registry_package_with_retry(
     candidate: RegistryVersion,
     *,
     module_id: str,
+    progress: ArchiveInstallTracker | None = None,
 ) -> Path:
-    """Retry one idempotent download after a timeout or interrupted read."""
+    """Retry one idempotent download after a timeout or remote disconnect."""
 
     for attempt in range(1, _REGISTRY_DOWNLOAD_MAX_ATTEMPTS + 1):
         try:
+            if progress is not None:
+                return download_registry_package(candidate, progress=progress)
             return download_registry_package(candidate)
-        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ReadError) as exc:
+        except (
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+        ) as exc:
             if attempt >= _REGISTRY_DOWNLOAD_MAX_ATTEMPTS:
                 raise
             log.warning(
@@ -602,6 +668,7 @@ def _download_registry_package_with_retry(
 )
 def workshop_install_registry(
     payload: RegistryInstallRequest,
+    progress: TrackArchiveInstall = None,
 ) -> WorkshopModuleMutationResponse:
     """Install one exact candidate selected from a trusted Registry.
 
@@ -633,7 +700,10 @@ def workshop_install_registry(
         archive_path = _download_registry_package_with_retry(
             candidate,
             module_id=payload.module_id,
+            progress=progress,
         )
+        if progress is not None:
+            progress.stage("installing")
         state = get_workshop_installer().install_candidate(
             archive_path,
             source="registry",
@@ -645,7 +715,7 @@ def workshop_install_registry(
             event="workshop_module_install_failed",
             exc=exc,
             status_code=503,
-            detail="No trusted Creative Workshop catalog is available.",
+            detail={"code": "registry-catalog-unavailable", "message": _CATALOG_UNAVAILABLE},
             module_id=payload.module_id,
             version=payload.version,
         )
@@ -654,7 +724,7 @@ def workshop_install_registry(
             event="workshop_module_install_failed",
             exc=exc,
             status_code=502,
-            detail="The Registry package could not be downloaded safely.",
+            detail={"code": "registry-download-failed", "message": _REGISTRY_DOWNLOAD_UNAVAILABLE},
             module_id=payload.module_id,
             version=payload.version,
         )
@@ -681,25 +751,35 @@ def workshop_install_registry(
             module_id=payload.module_id,
             version=payload.version,
         )
-    except httpx.TimeoutException as exc:
+    except (
+        httpx.TimeoutException,
+        httpx.NetworkError,
+        httpx.RemoteProtocolError,
+        httpx.ProxyError,
+    ) as exc:
+        timed_out = isinstance(exc, httpx.TimeoutException)
         _raise_workshop_http_error(
             event="workshop_module_install_failed",
             exc=exc,
-            status_code=504,
-            detail=(
-                "The Registry package download timed out. "
-                "Check your network or proxy settings, then retry."
-            ),
+            status_code=504 if timed_out else 502,
+            detail={
+                "code": "registry-download-network-error",
+                "message": _REGISTRY_DOWNLOAD_TIMED_OUT if timed_out else _REGISTRY_DOWNLOAD_UNAVAILABLE,
+            },
             module_id=payload.module_id,
             version=payload.version,
-            log_error_message="Registry package download timed out",
+            log_error_message=(
+                "Registry package download timed out"
+                if timed_out
+                else "Registry package download interrupted"
+            ),
         )
     except (httpx.HTTPError, OSError) as exc:
         _raise_workshop_http_error(
             event="workshop_module_install_failed",
             exc=exc,
             status_code=502,
-            detail="The Registry package could not be downloaded.",
+            detail={"code": "registry-download-failed", "message": _REGISTRY_DOWNLOAD_UNAVAILABLE},
             module_id=payload.module_id,
             version=payload.version,
         )
@@ -724,6 +804,7 @@ def workshop_install_registry(
 )
 def workshop_install_github(
     payload: GithubInstallRequest,
+    progress: TrackArchiveInstall = None,
 ) -> WorkshopModuleMutationResponse:
     """Install a standard package from one exact GitHub Release.
 
@@ -732,10 +813,11 @@ def workshop_install_github(
 
     archive_path: Path | None = None
     try:
-        archive_path = resolve_github_release_package(
-            payload.repository_url,
-            payload.version,
-        )
+        if progress is not None:
+            archive_path = resolve_github_release_package(payload.repository_url, payload.version, progress=progress)
+            progress.stage("installing")
+        else:
+            archive_path = resolve_github_release_package(payload.repository_url, payload.version)
         state = get_workshop_installer().install_candidate(
             archive_path,
             source="github",
@@ -832,6 +914,21 @@ def workshop_activate_module(
     payload: ModuleActivateRequest,
 ) -> WorkshopModuleMutationResponse:
     installer = get_workshop_installer()
+    if _version_declares_backend(installer, module_id, payload.version):
+        try:
+            # A backend version becomes active only after its preparation
+            # transaction (environment, models, self-check) succeeded.
+            get_workshop_backend_runtime(installer.data_dir).require_activatable(
+                module_id,
+                payload.version,
+            )
+        except WorkshopBackendError as exc:
+            raise_backend_error(
+                exc,
+                event="workshop_module_activate_failed",
+                module_id=module_id,
+                version=payload.version,
+            )
     state = _run_install_mutation(
         event="workshop_module_activate_failed",
         module_id=module_id,
@@ -892,6 +989,11 @@ def workshop_set_module_enabled(
             payload.enabled,
         ),
     )
+    if not state.enabled:
+        runtime = existing_workshop_backend_runtime(installer.data_dir)
+        if runtime is not None:
+            # Disabling stops this module's tasks and process tree only.
+            runtime.module_disabled(module_id)
     log.info(
         "Creative Workshop module enabled state changed",
         extra={
@@ -913,17 +1015,37 @@ def workshop_uninstall_module(
     payload: ModuleUninstallRequest,
 ) -> WorkshopModuleMutationResponse:
     installer = get_workshop_installer()
+    report: WorkshopUninstallReportResponse | None = None
     try:
-        state = installer.uninstall(
-            module_id,
-            delete_projects=payload.delete_projects,
-        )
+        if _uses_backend_runtime(installer, module_id):
+            # Stop tasks and processes, remove code, release references,
+            # reclaim unused programs, then report what happened.
+            state, runtime_report = get_workshop_backend_runtime(
+                installer.data_dir
+            ).uninstall_module(
+                module_id,
+                delete_projects=payload.delete_projects,
+                delete_task_data=payload.delete_task_data,
+                retain_models=payload.retain_models,
+            )
+            report = WorkshopUninstallReportResponse(**runtime_report.as_json())
+        else:
+            state = installer.uninstall(
+                module_id,
+                delete_projects=payload.delete_projects,
+            )
     except WorkshopInstallError as exc:
         _raise_workshop_http_error(
             event="workshop_module_uninstall_failed",
             exc=exc,
             status_code=_install_error_status(exc),
             detail=str(exc),
+            module_id=module_id,
+        )
+    except WorkshopBackendError as exc:
+        raise_backend_error(
+            exc,
+            event="workshop_module_uninstall_failed",
             module_id=module_id,
         )
     except OSError as exc:
@@ -940,6 +1062,8 @@ def workshop_uninstall_module(
             "event": "workshop_module_uninstall_done",
             "module_id": module_id,
             "delete_projects": payload.delete_projects,
+            "delete_task_data": payload.delete_task_data,
+            "retain_models": payload.retain_models,
             "tombstone_retained": state is not None,
         },
     )
@@ -948,7 +1072,44 @@ def workshop_uninstall_module(
             _state_response(state, installer)
             if state is not None
             else None
+        ),
+        uninstall_report=report,
+    )
+
+
+def _version_declares_backend(
+    installer: WorkshopInstaller,
+    module_id: str,
+    version: str,
+) -> bool:
+    try:
+        root = installer.version_path(module_id, version)
+        manifest = parse_workshop_manifest_json(
+            _read_bounded_utf8(
+                root,
+                "manifest.json",
+                maximum_bytes=MAX_MANIFEST_BYTES,
+            )
         )
+    except (WorkshopInstallError, OSError, UnicodeError, ValueError):
+        return False
+    return isinstance(manifest, WorkshopManifestV2)
+
+
+def _uses_backend_runtime(
+    installer: WorkshopInstaller,
+    module_id: str,
+) -> bool:
+    """Whether uninstall must release backend runtime resources."""
+
+    if existing_workshop_backend_runtime(installer.data_dir) is not None:
+        return True
+    if (installer.data_dir / "runtime").is_dir():
+        return True
+    state = installer.get(module_id)
+    return state is not None and any(
+        _version_declares_backend(installer, module_id, version)
+        for version in state.versions
     )
 
 
