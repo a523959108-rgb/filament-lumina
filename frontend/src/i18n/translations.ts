@@ -622,6 +622,9 @@ export const translations: Record<string, Record<"zh" | "en", string>> = {
   filament_picker_cost: { zh: "打印成本", en: "Print cost" },
   filament_picker_source: { zh: "源码", en: "Source code" },
   filament_picker_based_on: { zh: "基于 Lumina-Layers", en: "Based on Lumina-Layers" },
+  filament_picker_prefill_label: { zh: "已从耗材选色站带入颜色", en: "Colors imported from Filament Picker" },
+  filament_picker_prefill_use_lut: { zh: "改用经典 LUT", en: "Use Classic LUT instead" },
+  filament_picker_prefill_dismiss: { zh: "关闭提示", en: "Dismiss" },
   bug_report_button_label: {
     zh: "反馈问题",
     en: "Report a bug",

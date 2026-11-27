@@ -68,6 +68,13 @@ import {
 import { isSvgImageFile } from "../../utils/imageRotation";
 import { WIKI_DOCS } from "../../utils/wikiDocs";
 import { isPredictiveLutSource } from "../../utils/lutVisibility";
+import { isLocalLuminaAppOrigin } from "../../utils/localAppOrigin";
+import {
+  findLegacyLutForMode,
+  matchMaterialsForPrefillColors,
+  parseStackHashPrefill,
+  type StackHashPrefill,
+} from "../../integrations/filamentPicker/hashPrefill";
 import {
   resolveLargeFormatTileGrid,
   resolveLargeFormatTotalHeightMm,
@@ -820,7 +827,28 @@ export default function BasicSettings() {
   const retryMaterialLibraryLoad = useCallback(() => {
     setMaterialLibraryLoadAttempt((attempt) => attempt + 1);
   }, []);
-  const materialLibraryNeeded = source_version === "material" || materialPickerOpen;
+  const isLocalOrigin = isLocalLuminaAppOrigin();
+  const [hashSnapshot, setHashSnapshot] = useState(() =>
+    typeof window !== "undefined" ? window.location.hash : "",
+  );
+  useEffect(() => {
+    const onHashChange = () => setHashSnapshot(window.location.hash);
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  const hashPrefill = useMemo<StackHashPrefill>(
+    () => parseStackHashPrefill(hashSnapshot),
+    [hashSnapshot],
+  );
+  const [prefillNoticeColors, setPrefillNoticeColors] = useState<string[]>([]);
+  const [pendingLegacyMode, setPendingLegacyMode] = useState<"RYBW" | "CMYW" | null>(null);
+  const appliedHashKeyRef = useRef<string | null>(null);
+  const publicFallbackAppliedRef = useRef(false);
+  const materialLibraryNeeded =
+    source_version === "material" ||
+    materialPickerOpen ||
+    hashPrefill.colors.length > 0 ||
+    hashPrefill.mode !== null;
   useEffect(() => {
     if (!materialLibraryNeeded) {
       clearWorkshopMaterialCatalog();
@@ -852,6 +880,69 @@ export default function BasicSettings() {
       });
     return () => { cancelled = true; };
   }, [materialLibraryLoadAttempt, source_version, materialLibraryNeeded]);
+
+  useEffect(() => {
+    if (!materialLibraryLoaded) return;
+    const hasPrefillParams = hashPrefill.colors.length > 0 || hashPrefill.mode !== null;
+    if (hasPrefillParams) {
+      const hashKey = `${hashPrefill.mode ?? ""}:${hashPrefill.colors.join(",")}`;
+      if (appliedHashKeyRef.current === hashKey) return;
+      appliedHashKeyRef.current = hashKey;
+      if (hashPrefill.colors.length > 0 && materialLibrary.length > 0) {
+        const matched = matchMaterialsForPrefillColors(hashPrefill.colors, materialLibrary);
+        if (matched.length > 0) {
+          setSourceVersion("material");
+          setSelectedMaterialDirNames(matched);
+          setPrefillNoticeColors(hashPrefill.colors);
+          setPendingLegacyMode(null);
+          return;
+        }
+      }
+      setPrefillNoticeColors(hashPrefill.colors);
+      setSourceVersion("legacy");
+      setPendingLegacyMode(hashPrefill.mode ?? "RYBW");
+      return;
+    }
+
+    if (
+      !isLocalOrigin &&
+      !publicFallbackAppliedRef.current &&
+      source_version === "material" &&
+      materialLibrary.length === 0 &&
+      selectedMaterialDirNames.length === 0
+    ) {
+      publicFallbackAppliedRef.current = true;
+      setSourceVersion("legacy");
+    }
+  }, [
+    hashPrefill,
+    isLocalOrigin,
+    materialLibrary,
+    materialLibraryLoaded,
+    selectedMaterialDirNames.length,
+    setSelectedMaterialDirNames,
+    setSourceVersion,
+    source_version,
+  ]);
+
+  useEffect(() => {
+    if (!pendingLegacyMode || source_version !== "legacy" || lutListFull.length === 0) return;
+    const target = findLegacyLutForMode(pendingLegacyMode, lutListFull);
+    setPendingLegacyMode(null);
+    if (!target) return;
+    const catalogMatch = allLegacyLutOptions.find((option) => option.value === target.name);
+    if (catalogMatch?.brand) {
+      setLegacyManufacturer(catalogMatch.brand);
+    }
+    setLegacyLutNames([target.name]);
+  }, [
+    allLegacyLutOptions,
+    lutListFull,
+    pendingLegacyMode,
+    setLegacyLutNames,
+    setLegacyManufacturer,
+    source_version,
+  ]);
 
   useEffect(() => {
     if (source_version !== "material" || !materialLibraryLoaded) return;
@@ -1327,10 +1418,55 @@ export default function BasicSettings() {
             beginResourceCalibration("materials", selected, intent);
           }}
           onRetry={retryMaterialLibraryLoad}
-          onImport={() => materialImportRef.current?.click()}
+          onImport={isLocalOrigin ? () => materialImportRef.current?.click() : undefined}
           operationError={materialImportError}
         />
         <input ref={materialImportRef} type="file" accept=".zip" className="hidden" onChange={(event) => void handleMaterialImport(event)} />
+        {prefillNoticeColors.length > 0 && (
+          <div
+            data-testid="fp-hash-prefill-banner"
+            className="flex flex-col gap-2 rounded-2xl border border-[var(--surface-divider)] bg-[var(--surface-well)] px-3 py-2.5 text-xs text-[var(--surface-text)]"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium">{t("filament_picker_prefill_label")}</span>
+              <button
+                type="button"
+                onClick={() => setPrefillNoticeColors([])}
+                className="text-[11px] text-[var(--surface-text-muted)] hover:text-[var(--surface-text)]"
+              >
+                {t("filament_picker_prefill_dismiss")}
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {prefillNoticeColors.map((hex) => (
+                  <span
+                    key={hex}
+                    className="inline-flex items-center gap-1 rounded-full border border-[var(--surface-divider)] bg-[var(--surface-panel)] px-2 py-0.5 text-[11px] font-mono"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="size-2.5 rounded-full border border-[var(--surface-divider)]"
+                      style={{ backgroundColor: hex }}
+                    />
+                    {hex}
+                  </span>
+                ))}
+              </div>
+              {source_version === "material" && (
+                <Button
+                  label={t("filament_picker_prefill_use_lut")}
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setSourceVersion("legacy");
+                    setPendingLegacyMode(hashPrefill.mode ?? "RYBW");
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        )}
         <div data-tutorial="color-source-mode" className="min-w-0">
           <RadioGroup
             label={t("basic_source_version_label")}

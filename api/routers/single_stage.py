@@ -465,6 +465,15 @@ def _is_trusted_material_library_request(request: Request) -> tuple[bool, str]:
     return True, "local_origin"
 
 
+def _reject_cross_site_fetch(request: Request) -> None:
+    fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    if fetch_site == "cross-site":
+        raise HTTPException(
+            status_code=403,
+            detail=GRADIENT_CARD_MATERIAL_LIBRARY_FORBIDDEN_DETAIL,
+        )
+
+
 def _enforce_material_library_request(request: Request) -> None:
     trusted, reason = _is_trusted_material_library_request(request)
     if trusted:
@@ -1837,39 +1846,15 @@ async def extractor_import_gradient_card_materials(
     )
 
 
-@router.get("/gradient-card-materials")
-async def extractor_list_gradient_card_materials(
-    request: Request,
-    include_file_urls: bool = Query(
-        False,
-        description="Register temporary /api/files URLs for each material archive.",
-    ),
-    registry: FileRegistry = Depends(get_file_registry),
-) -> GradientCardMaterialLibraryResponse:
-    """List saved gradient-card material archives.
-    列出已保存的梯度卡耗材档案。
-    """
-    _enforce_material_library_request(request)
-    try:
-        materials = list_saved_stage_a_material_archives()
-    except (ValueError, TypeError, OSError, RuntimeError) as exc:
-        log.error(
-            "Gradient card material library failed",
-            extra={
-                "event": "extractor_gradient_card_material_library_failed",
-                "include_file_urls": bool(include_file_urls),
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-            },
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=GRADIENT_CARD_MATERIAL_LIBRARY_LIST_FAILED_DETAIL,
-        ) from exc
-
+def _serialize_saved_material_items(
+    materials: list[dict[str, Any]],
+    *,
+    registry: FileRegistry | None = None,
+    include_file_urls: bool = False,
+) -> list[dict[str, object]]:
     persistent_registry_session = (
         f"material-library:{uuid.uuid4().hex}"
-        if include_file_urls
+        if include_file_urls and registry is not None
         else None
     )
     response_items: list[dict[str, object]] = []
@@ -1881,7 +1866,7 @@ async def extractor_list_gradient_card_materials(
                     str(item['archive_path']),
                     ttl_seconds=MATERIAL_LIBRARY_FILE_TTL_SECONDS,
                 )}"
-                if persistent_registry_session is not None
+                if persistent_registry_session is not None and registry is not None
                 else None
             )
             stage_a_path = item.get("stage_a_params_path")
@@ -1892,6 +1877,7 @@ async def extractor_list_gradient_card_materials(
                     ttl_seconds=MATERIAL_LIBRARY_FILE_TTL_SECONDS,
                 )}"
                 if persistent_registry_session is not None
+                and registry is not None
                 and isinstance(stage_a_path, str)
                 and stage_a_path
                 else None
@@ -1920,6 +1906,64 @@ async def extractor_list_gradient_card_materials(
             status_code=500,
             detail=GRADIENT_CARD_MATERIAL_LIBRARY_LIST_FAILED_DETAIL,
         ) from exc
+    return response_items
+
+
+def _load_saved_material_archives_or_500(*, include_file_urls: bool = False) -> list[dict[str, Any]]:
+    try:
+        return list_saved_stage_a_material_archives()
+    except (ValueError, TypeError, OSError, RuntimeError) as exc:
+        log.error(
+            "Gradient card material library failed",
+            extra={
+                "event": "extractor_gradient_card_material_library_failed",
+                "include_file_urls": bool(include_file_urls),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=GRADIENT_CARD_MATERIAL_LIBRARY_LIST_FAILED_DETAIL,
+        ) from exc
+
+
+@router.get("/public-gradient-card-materials")
+async def extractor_list_public_gradient_card_materials(
+    request: Request,
+) -> GradientCardMaterialLibraryResponse:
+    """List preinstalled material archives for public read-only browsing.
+    列出已预装的耗材档案供公网页面只读选用。
+    """
+    _reject_cross_site_fetch(request)
+    materials = _load_saved_material_archives_or_500(include_file_urls=False)
+    response_items = _serialize_saved_material_items(materials, include_file_urls=False)
+    return GradientCardMaterialLibraryResponse(
+        status="ok",
+        message=f"Loaded {len(response_items)} saved materials",
+        materials=response_items,
+    )
+
+
+@router.get("/gradient-card-materials")
+async def extractor_list_gradient_card_materials(
+    request: Request,
+    include_file_urls: bool = Query(
+        False,
+        description="Register temporary /api/files URLs for each material archive.",
+    ),
+    registry: FileRegistry = Depends(get_file_registry),
+) -> GradientCardMaterialLibraryResponse:
+    """List saved gradient-card material archives.
+    列出已保存的梯度卡耗材档案。
+    """
+    _enforce_material_library_request(request)
+    materials = _load_saved_material_archives_or_500(include_file_urls=bool(include_file_urls))
+    response_items = _serialize_saved_material_items(
+        materials,
+        registry=registry,
+        include_file_urls=bool(include_file_urls),
+    )
 
     return GradientCardMaterialLibraryResponse(
         status="ok",

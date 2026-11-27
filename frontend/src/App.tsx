@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, Suspense, Component, lazy } from "react";
 import type { ReactNode } from "react";
 import apiClient from "./api/client";
+import { parseStackHashPrefill } from "./integrations/filamentPicker/hashPrefill";
 import { useApplicationMenuCommand, useApplicationMenuLanguage } from "./integrations/applicationMenu";
 import type { HealthResponse } from "./api/types";
 import { trackLuminaEvent } from "./analytics/umami";
@@ -342,6 +343,20 @@ function AppContent({ connected }: { connected: boolean | null }) {
   }, [dismissErrorTicketPrompt]);
   const activeTab = useWidgetStore((s) => s.activeTab);
   useDynamicMaterialCatalog(connected === true && activeTab === "converter" && !projectOpening);
+  useEffect(() => {
+    const syncStackHashTab = () => {
+      if (typeof window === "undefined") return;
+      if (parseStackHashPrefill(window.location.hash).isStackRoute) {
+        const widgetStore = useWidgetStore.getState();
+        widgetStore.setActiveTab("converter");
+        widgetStore.setActiveConverterSubTab("core");
+      }
+    };
+    syncStackHashTab();
+    window.addEventListener("hashchange", syncStackHashTab);
+    return () => window.removeEventListener("hashchange", syncStackHashTab);
+  }, []);
+
   useEffect(() => {
     if (activeTab === "workshop") useWorkshopProjectRuntime.setState({ mounted: true });
   }, [activeTab]);

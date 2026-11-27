@@ -14,6 +14,7 @@ import {
 } from "../../stores/materialWorkbenchStore";
 import { useWidgetStore } from "../../stores/widgetStore";
 import type { TabId } from "../../types/widget";
+import { isLocalLuminaAppOrigin } from "../../utils/localAppOrigin";
 import Button from "../ui/Button";
 import { formatCandidateCount } from "./format";
 
@@ -67,12 +68,13 @@ export default function MaterialCacheStatusLine() {
   const applySelection = useMaterialWorkbenchStore((s) => s.applySelection);
   const [overview, setOverview] = useState<MaterialCacheOverviewResponse | null>(null);
   const [failed, setFailed] = useState(false);
+  const isLocalOrigin = isLocalLuminaAppOrigin();
   const hasMaterials = combo.materialDirectoryNames.length > 0;
 
   useEffect(() => {
     setOverview(null);
     setFailed(false);
-    if (!hasMaterials || isConverting) return;
+    if (!hasMaterials || isConverting || !isLocalOrigin) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       fetchMaterialCacheOverview(combo, { signal: controller.signal })
@@ -89,9 +91,9 @@ export default function MaterialCacheStatusLine() {
     };
     // comboKey captures every field of combo that matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comboKey, hasMaterials, isConverting]);
+  }, [comboKey, hasMaterials, isConverting, isLocalOrigin]);
 
-  if (!hasMaterials) return null;
+  if (!hasMaterials || !isLocalOrigin) return null;
 
   const status = failed
     ? { text: t("basic_material_cache_status_line_error"), tone: "error" as const }

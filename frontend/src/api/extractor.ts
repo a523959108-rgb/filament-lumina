@@ -1,4 +1,5 @@
 import apiClient from "./client";
+import { isLocalLuminaAppOrigin } from "../utils/localAppOrigin";
 import {
   createPreviewResource,
   type PreviewResourceUploadProgress,
@@ -615,10 +616,17 @@ export async function listGradientCardMaterials(options?: {
   includeFileUrls?: boolean;
   signal?: AbortSignal;
 }): Promise<GradientCardMaterialLibraryResponse> {
+  const isLocalOrigin = isLocalLuminaAppOrigin();
+  const path = isLocalOrigin
+    ? "/extractor/gradient-card-materials"
+    : "/extractor/public-gradient-card-materials";
   const response = await apiClient.get<GradientCardMaterialLibraryResponse>(
-    "/extractor/gradient-card-materials",
+    path,
     {
-      params: options?.includeFileUrls ? { include_file_urls: true } : undefined,
+      params:
+        isLocalOrigin && options?.includeFileUrls
+          ? { include_file_urls: true }
+          : undefined,
       timeout: 3_600_000,
       ...(options?.signal ? { signal: options.signal } : {}),
     },

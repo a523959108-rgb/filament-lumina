@@ -446,6 +446,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             },
         )
 
+    if _env_enabled("LUMINA_AUTO_INSTALL_SEEDS"):
+        for seed_kind, module_path, fn_name in (
+            ("material", "api.material_seed", "install_material_seed_if_needed"),
+            ("lut", "api.lut_seed", "install_lut_seed_if_needed"),
+        ):
+            try:
+                module = __import__(module_path, fromlist=[fn_name])
+                seed_result = getattr(module, fn_name)()
+                if seed_result is not None:
+                    log.info(
+                        "Startup starter seed installed",
+                        extra={
+                            "event": f"{seed_kind}_seed_install_done",
+                            "installed_count": seed_result.get("installed_count", 0),
+                            "seed_source": seed_result.get("seed_source"),
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 — seed bootstrap must not block startup.
+                log.warning(
+                    "Startup starter seed install failed",
+                    extra={
+                        "event": f"{seed_kind}_seed_install_failed",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                )
+
     try:
         workshop_seed_result = install_workshop_seed_if_needed()
         if workshop_seed_result is not None:

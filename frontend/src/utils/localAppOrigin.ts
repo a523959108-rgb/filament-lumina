@@ -16,6 +16,22 @@ const LOCAL_ONLY_PATH_PREFIXES = [
   "/extractor/material-solver-cache",
   "/extractor/material-solver-caches",
   "/extractor/material-solver-runtime",
+  "/extractor/material-gamut",
+  "/extractor/material-cache",
+  "/extractor/material-dynamic-cache",
+  "/contributions",
+  "/community",
+  "/resources/source",
+  "/resources/materials/install",
+  "/resources/materials/restore",
+  "/resources/luts/install",
+  "/resources/luts/restore",
+  "/lut-registry/install",
+  "/lut-registry/restore",
+  "/material-sync/install",
+  "/material-sync/install-from-registry",
+  "/material-sync/refresh",
+  "/material-sync/rollback",
 ] as const;
 
 export function isLocalLuminaAppOrigin(hostname?: string): boolean {
