@@ -89,6 +89,9 @@ from api.routers import (
     health_router,
     lut_router,
     lut_registry_router,
+    resources_router,
+    contributions_router,
+    resource_activity_router,
     material_registry_router,
     material_sync_router,
     session_router,
@@ -96,7 +99,13 @@ from api.routers import (
     single_stage_router,
     system_router,
     vectorizer_router,
+    workshop_backend_router,
     workshop_router,
+)
+from api.workshop_runtime_service import (
+    purge_expired_backend_task_data,
+    shutdown_backend_runtimes,
+    start_existing_backend_runtime,
 )
 from core.workshop import WorkshopError
 from api.routers.projects import router as projects_router
@@ -437,28 +446,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             },
         )
 
-    try:
-        from api.material_seed import install_material_seed_if_needed
-
-        seed_result = install_material_seed_if_needed()
-        if seed_result is not None:
-            log.info(
-                "Material seed installed",
-                extra={
-                    "event": "material_seed_install_done",
-                    "installed_count": seed_result["installed_count"],
-                    "seed_source": seed_result["seed_source"],
-                },
-            )
-    except Exception as exc:  # noqa: BLE001 — seed bootstrap must not block startup.
-        log.warning(
-            "Material seed install failed",
-            extra={
-                "event": "material_seed_install_failed",
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-            },
-        )
+    if _env_enabled("LUMINA_AUTO_INSTALL_SEEDS"):
+        for seed_kind, module_path, fn_name in (
+            ("material", "api.material_seed", "install_material_seed_if_needed"),
+            ("lut", "api.lut_seed", "install_lut_seed_if_needed"),
+        ):
+            try:
+                module = __import__(module_path, fromlist=[fn_name])
+                seed_result = getattr(module, fn_name)()
+                if seed_result is not None:
+                    log.info(
+                        "Startup starter seed installed",
+                        extra={
+                            "event": f"{seed_kind}_seed_install_done",
+                            "installed_count": seed_result.get("installed_count", 0),
+                            "seed_source": seed_result.get("seed_source"),
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 — seed bootstrap must not block startup.
+                log.warning(
+                    "Startup starter seed install failed",
+                    extra={
+                        "event": f"{seed_kind}_seed_install_failed",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                )
 
     try:
         workshop_seed_result = install_workshop_seed_if_needed()
@@ -486,12 +499,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             },
         )
 
+    try:
+        # Kill backends left by an abrupt exit, mark their tasks interrupted,
+        # and retry pending reclamation. No-op until a backend was ever used.
+        await asyncio.to_thread(start_existing_backend_runtime)
+    except (OSError, ValueError, WorkshopError) as exc:
+        log.error(
+            "Creative Workshop backend runtime reconciliation failed",
+            extra={
+                "event": "workshop_backend_startup_failed",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+
     async def _cleanup_loop() -> None:
         """Periodically clean up expired sessions and their registered files.
         定期清理过期会话及其注册文件。
         """
+        passes = 0
         while True:
             await asyncio.sleep(60)
+            passes += 1
+            if passes % 60 == 0:
+                # Hourly: drop finished backend task data past its retention.
+                await asyncio.to_thread(purge_expired_backend_task_data)
             expired_sids, registry_cleanup_sids, expired_files = _run_cleanup_pass()
             if expired_sids:
                 log.info(
@@ -517,12 +549,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
     material_sync_refresh_tasks = start_material_sync_auto_refresh_tasks()
+    from api.services.contribution_queue import contribution_worker
+    contribution_task = asyncio.create_task(contribution_worker())
 
     yield
 
     # --- Shutdown ---
     cleanup_task.cancel()
+    contribution_task.cancel()
+    await asyncio.gather(contribution_task, return_exceptions=True)
     await cancel_material_sync_auto_refresh_tasks(material_sync_refresh_tasks)
+    # Module backends end with their unfinished tasks; Job Objects (Windows)
+    # and the control-pipe EOF also cover abrupt termination of this process.
+    await asyncio.to_thread(shutdown_backend_runtimes)
     worker_pool.shutdown(wait=True)
     log.info("Worker pool shutdown complete", extra={"event": "worker_pool_shutdown"})
 
@@ -677,6 +716,9 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(lut_router)
     app.include_router(lut_registry_router)
+    app.include_router(resources_router)
+    app.include_router(contributions_router)
+    app.include_router(resource_activity_router)
     if _material_registry_service_enabled():
         app.include_router(material_registry_router)
     app.include_router(material_sync_router)
@@ -686,6 +728,7 @@ def create_app() -> FastAPI:
     app.include_router(system_router)
     app.include_router(vectorizer_router)
     app.include_router(workshop_router)
+    app.include_router(workshop_backend_router)
 
     @app.get("/api/files/{file_id}")
     def serve_file(

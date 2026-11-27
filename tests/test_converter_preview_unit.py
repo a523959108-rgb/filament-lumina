@@ -484,6 +484,117 @@ def test_preview_lut_constrained_positive_hue_weight_succeeds_through_worker(
                 app.dependency_overrides[dependency] = previous
 
 
+@pytest.mark.parametrize(("directory_name", "has_calibration"), [
+    ("_sync/curation-backups/source-materials/爱丽兹_PLA白", True),
+    ("爱丽兹/PLA 白", False),
+])
+def test_preview_unavailable_material_prompts_for_a_new_selection(
+    directory_name: str, has_calibration: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "materials" / directory_name
+    archive.mkdir(parents=True)
+    (archive / "material.json").write_text('{"material_name":"PLA 白"}', encoding="utf-8")
+    if has_calibration:
+        (archive / "stage_A_parameters.json").write_text(json.dumps({"parameters": {
+            "channels": [{"E": [0.9, 0.9, 0.9], "k": [1.0, 1.0, 1.0]}],
+            "substrates": [{"substrate_id": "white", "C0": [1.0, 1.0, 1.0]}],
+        }}), encoding="utf-8")
+    monkeypatch.setattr("core.material_lut_synthesis.MATERIALS_DIR", str(tmp_path / "materials"))
+    monkeypatch.setitem(app.dependency_overrides, get_worker_pool, _InlineRealWorkerPool)
+    source = io.BytesIO()
+    Image.new("RGB", (12, 10), "white").save(source, format="PNG")
+
+    with TestClient(app, raise_server_exceptions=False) as local_client:
+        response = local_client.post(
+            "/api/convert/preview",
+            files={"image": ("input.png", source.getvalue(), "image/png")},
+            data={
+                "material_source": "material_archive",
+                "selected_materials": json.dumps([directory_name]),
+                "target_width_mm": "40",
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "material_archive_unavailable"
+    assert archive.name in detail["message"]
+    assert str(tmp_path) not in detail["message"]
+
+
+def test_preview_small_real_input_keeps_print_dimensions_with_bounded_display(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker PNG budget must not become the printable grid dimensions."""
+    monkeypatch.setattr("config.IMAGE_PREVIEW_MAX_EDGE", 32)
+    monkeypatch.setattr("config.TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr("api.file_registry.TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr("api.preview_cache_artifacts.TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr("api.routers.converter.preview.TEMP_DIR", str(tmp_path))
+    image_path = tmp_path / "input.png"
+    rgba = np.full((12, 8, 4), 255, dtype=np.uint8)
+    rgba[:2, :, 3] = 0
+    rgba[4:10, 2:6, :3] = [220, 20, 60]
+    Image.fromarray(rgba).save(image_path)
+    lut_path = tmp_path / "lut.npz"
+    np.savez(
+        lut_path,
+        rgb=np.array([[255, 255, 255], [220, 20, 60]], dtype=np.uint8),
+        stacks=np.array([[0, 0, 0, 0, 0], [1, 1, 1, 1, 1]], dtype=np.int32),
+    )
+    store = SessionStore(ttl=1800)
+    registry = FileRegistry()
+    monkeypatch.setitem(app.dependency_overrides, get_session_store, lambda: store)
+    monkeypatch.setitem(app.dependency_overrides, get_file_registry, lambda: registry)
+    monkeypatch.setitem(
+        app.dependency_overrides, get_worker_pool, lambda: _InlineRealWorkerPool(),
+    )
+
+    try:
+        local_client = TestClient(app, raise_server_exceptions=False)
+        with (
+            patch(
+                "api.routers.converter.preview.LUTManager.resolve_source_selection",
+                return_value=(str(lut_path), "Temporary LUT"),
+            ),
+            patch(
+                "api.routers.converter.preview.ensure_png_tempfile",
+                new=AsyncMock(return_value=str(image_path)),
+            ),
+            patch("api.routers.converter.preview.generate_segmented_glb", return_value=None),
+        ):
+            response = local_client.post(
+                "/api/convert/preview",
+                files={"image": ("input.png", image_path.read_bytes(), "image/png")},
+                data={
+                    "lut_name": "temporary_lut", "color_mode": "4-Color (RYBW)",
+                    "target_width_mm": "4", "quantize_colors": "8",
+                    "enable_cleanup": "false",
+                },
+            )
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            dimensions = payload["dimensions"]
+            assert dimensions["width"] == 40
+            assert dimensions["height"] == 60
+            assert dimensions["width_mm"] == 4.0
+            assert dimensions["height_mm"] == 6.0
+            display_response = local_client.get(payload["preview_url"])
+            assert display_response.status_code == 200
+            with Image.open(io.BytesIO(display_response.content)) as display:
+                assert display.size == (21, 32)
+                assert display.mode == "RGBA"
+                assert display.getchannel("A").getextrema() == (0, 255)
+            raw_response = local_client.get(dimensions["preview_raw_url"])
+            assert raw_response.status_code == 200
+            with Image.open(io.BytesIO(raw_response.content)) as raw:
+                assert raw.size == (40, 60)
+    finally:
+        store.clear_all()
+        registry.clear_all()
+
+
 def test_empty_svg_real_worker_returns_actionable_422(tmp_path: Path) -> None:
     """Exercise the real vector wrapper that prefixes the stable diagnostic."""
 
@@ -495,7 +606,7 @@ def test_empty_svg_real_worker_returns_actionable_422(tmp_path: Path) -> None:
     )
     upload_bytes = image_path.read_bytes()
     lut_path = Path(
-        "lut-preset/Custom/Bambulab&PLA&RYBW&红-黄-蓝-白.npy"
+        "tests/fixtures/lut_regression/Bambulab&PLA&RYBW&红-黄-蓝-白.npy"
     ).resolve()
     assert lut_path.exists()
 

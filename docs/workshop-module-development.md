@@ -169,6 +169,11 @@ publisher or trust changes still require separate review.
 | `project.storage` | `client.projects.*` | 只能访问本模块命名空间；单记录 64 MiB、模块总量 256 MiB |
 | `color-library.read` | `client.colorLibrary.read()` | 只返回规范化色库，不暴露 LUT、耗材档案路径或私有状态 |
 | `handoff.image` | `client.handoff.image()` | 重新校验 PNG、像素、物理尺寸、色库身份和 1 MiB 配方信封 |
+| `material.import` | `client.materials.import()` | 每次调用都由宿主对话框确认；每次一个 Stage-A 耗材归档，最多 8 MiB；复用耗材库导入器校验与回滚；仅限本机或桌面宿主（Workshop API 1.2.0） |
+
+| Permission | SDK call | Host boundary |
+| --- | --- | --- |
+| `material.import` | `client.materials.import()` | A host dialog confirms every call; one Stage-A material archive per call, at most 8 MiB; validated and rolled back by the material-library importer; local or desktop hosts only (Workshop API 1.2.0) |
 
 权限理由会显示给用户。更新新增权限时，宿主必须再次确认，拒绝后旧版本继续可用。
 v1 没有一般网络权限。
@@ -304,6 +309,119 @@ Registry 收录时还会绑定 GitHub 仓库、Release tag、字节数、包摘�
 
 主仓库提供的最小 fixture 用于验证宿主契约；模块自己的识别、编辑、渲染和迁移测试
 仍留在独立仓库。
+
+## 耗材导入（Workshop API 1.2.0）/ Material import (Workshop API 1.2.0)
+
+生成 Stage-A 耗材归档的模块（例如校准模块）可以请求宿主把归档导入耗材库。公开契约
+见 SDK 仓库的 `material.import`（提议中的 Workshop API 1.2.0）；在宿主锁定的 SDK
+包含它之前，由宿主侧 `frontend/src/workshop/contracts.ts` 承接，与后端 RPC 的方式相同。
+
+- manifest 声明 `material.import`，`workshopApi.min` 至少为 `1.2.0`（宿主安装时校验）；
+  模块以 `features: ["materials.import"]` 连接并上报 API `1.2.0`。
+- 每次调用只导入一个归档。宿主先校验载荷：`archiveBytes` 为 1 B 至 8 MiB 的
+  `ArrayBuffer`，`fileName` 为以 `.zip` 结尾的安全文件名，`summary` 最多 16 个耗材、
+  每项最多 8 条备注、每个字符串不超过 120 字符；不符合时返回 `rpc-payload-invalid`
+  或 `rpc-binary-too-large`，不会弹窗。
+- 宿主在 iframe 外弹出确认框，显示模块名称、ID、版本、发布者、审核等级、文件名与
+  大小，并把模块提供的 `summary` 标为“由模块提供（Lumina 未核实）”。确认阶段最多等待
+  5 分钟：用户取消返回 `{ status: "cancelled" }`；超时或关闭连接会结束请求，均不会上传。
+  宿主确认后发送同一 `requestId` 的 `material-import-prepared` 控制消息；仅仍有效的 SDK
+  请求回复 `material-import-commit` 后才上传，已超时的请求只发送 `material-import-cancel`。
+  同一模块同时只能有一个待处理的导入，第二次调用返回 `material-import-busy`。
+- 提交后关闭确认计时器，宿主通过耗材库页面使用的同一个前端客户端调用
+  `POST /api/extractor/gradient-card-materials/import`，不新增服务器接口；校验与回滚
+  仍在服务器完成。以 HTTP 返回为准报告结果；成功后异步刷新耗材库状态并立即返回
+  `{ status: "imported", materials: [{ directoryName, name }] }`。
+  提交后的取消或断联会中止 HTTP 等待，但不保证服务器未写入；结果未知时返回不可自动重试
+  的错误，并提示先核对耗材库，避免重复导入。
+- 错误码：`material-import-invalid`（HTTP 422，消息为服务器的安全说明）、
+  `material-import-unavailable`（HTTP 403，耗材库只接受本机或桌面宿主的导入）、
+  `material-import-failed`（其他失败，不可自动重试）、`material-import-outcome-unknown`
+  （提交后取消或宿主关闭）。该调用只在耗材库本身允许导入的地方可用。
+- 合成 fixture 处理器返回固定结果 `fixture-material`，不触碰耗材库。
+
+A module that produces a Stage-A material archive, such as a calibration
+module, can ask the host to import it. The manifest declares `material.import`
+with `workshopApi.min >= 1.2.0`, and the module connects with
+`features: ["materials.import"]`. Each call imports one archive. The host first
+validates the payload (an `ArrayBuffer` of 1 B to 8 MiB, a safe file name ending
+in `.zip`, and a `summary` of at most 16 materials, 8 notes each, strings of at
+most 120 characters) and rejects anything else with `rpc-payload-invalid` or
+`rpc-binary-too-large` before any dialog. It then asks the user in a dialog
+outside the frame that shows the module name, id, version, publisher, review
+level, file name and size, and the module's `summary` labelled as provided by
+the module. The 5-minute deadline covers confirmation only. Declining returns
+`{ status: "cancelled" }`; expiry or closing the connection ends the request
+without uploading. After confirmation, the host sends `material-import-prepared`
+for that request ID. Only a still-pending SDK request replies with
+`material-import-commit`; an expired request sends `material-import-cancel`
+instead. A second call while one is pending fails with `material-import-busy`.
+Commit clears the confirmation deadline. The host uploads the archive through
+the same client the material library page uses for
+`POST /api/extractor/gradient-card-materials/import`; there is no new server
+endpoint, and validation and rollback stay on the server. HTTP success returns
+the imported materials immediately; library refresh runs independently.
+Cancellation or disconnection after commit aborts the HTTP wait but does not
+prove that the server did not import the archive. Unknown outcomes are not
+automatically retryable: check the material library first. Errors are
+`material-import-invalid` (HTTP 422, with the server's safe detail),
+`material-import-unavailable` (HTTP 403: the material library accepts imports
+only from a local or desktop host), `material-import-failed` (not automatically
+retryable), and `material-import-outcome-unknown` (cancelled or closed after
+commit). The call works
+only where the material library itself accepts imports. Synthetic fixture
+handlers return a fixed `fixture-material` result without touching the library.
+
+## 模块后端（Workshop API 1.1.0–1.2.0）
+
+需要本机 Python 处理的模块声明 manifest v2 后端。公开契约见 SDK 仓库的
+`docs/backend-protocol.md`。新增下载声明和本地化权限说明要求 `workshopApi.min`
+为 `1.2.0` 或更高，原有模块可继续使用 1.1.0 的声明。
+
+仅依赖 Python 包的模块可省略 `backend.models`、`backend.artifacts` 和
+`backend.downloadSources`。宿主从 `pylock.toml` 识别 wheel 原始 URL，并为支持的
+站点匹配内置镜像。需由宿主下载的模型和附加文件应在相应清单字段中声明原始 URL、
+大小和 SHA-256。若其他站点提供同一文件，模块作者可在该项的 `mirrors` 中声明 URL。
+
+宿主行为：
+
+- 安装只暂存代码；授权前只解析声明与 `pylock.toml`，不执行模块代码。管理界面展示
+  来源、审核等级（官方 / 签名 `reviews-v1.json` 中按包摘要列出的已审核社区版本 /
+  未审核）、声明的能力、预计新增与已共享的依赖/模型/Python 运行时。未审核代码需要
+  用户勾选红色风险提示下的确认框。后端以用户账户权限运行，能力仅说明开发者声明的用途。
+- 目录和 GitHub 安装显示扩展包的下载、校验与暂存阶段，本地安装显示传输与暂存。
+  声明 API 1.2.0 或更高版本的目录更新在包通过校验后从清单读取翻译，用户批准新增
+  权限后才开始准备或激活。
+- 本地包与目录包都可选择 Python、wheel、模型和数据包来源。宿主识别 URL 所属站点，
+  按选择优先尝试同站点的候选地址，并在失败时回退。选择原始地址时仅使用原始地址。
+  自动模式优先尝试清华 PyPI 镜像上的锁定 wheel，以及模块声明的 ModelScope 镜像。
+  PyTorch 专用 wheel 使用锁定地址和模块为该文件声明的镜像。
+  安装前的下载与磁盘占用区按 Python、依赖包、模型和附加文件显示预计首选源、文件数量和下载大小。
+  后端状态的 `download_plan` 按类别汇总待下载文件的原始站点、自动尝试顺序、文件数量、
+  已知字节数和大小待确认的文件数量。已共享的文件不计入下载计划。
+  镜像不会改变 wheel、模型或数据包的 SHA-256。Python 归档由 uv 校验。声明支持
+  Windows 的模块须使用可在 Windows 创建的模型和附加文件名。
+- 准备是可取消的后台任务，单独开启 GPU 加速时也可查看进度。界面显示来源、已下载量、
+  总量、速度和经过滤波的预计剩余时间。界面分别显示安装总进度和当前阶段，安装与自检没有
+  百分比时以动态进度条表示。
+  估算时按 SHA-256 合并 CPU 与 GPU 都需要的 wheel。相同平台和锁可共用环境，不同锁
+  可复用已经校验的 wheel、模型和数据包。存储页面单列下载缓存的实际占用。
+  失败或取消会清除未完成的内容。已校验的下载会保留到存储清理，重试时可以复用。
+  只有准备成功的版本才能激活。
+  取消单独进行的 GPU 准备后，CPU 环境仍可用，可从状态卡片重试。
+- 任务归宿主：落盘于 `runtime/tasks/<模块>/<任务>/`，切页、关闭 iframe 或停止后端都
+  不取消任务；取消先协作、宽限期后终止整棵进程树（Windows Job Object；POSIX 进程组
+  与进程树）。停用、卸载、退出程序会结束该模块的任务和进程。空闲（默认 5 分钟，模块
+  界面打开时延长）后释放进程。
+- 卸载默认保留工程、原图副本与结果，可分别选择删除；可选保留已下载模型。无人引用的
+  环境、共享文件、Python 运行时与下载缓存按引用回收；结果在卸载报告的“已清理 / 仍共享
+  / 已保留 / 未能删除”中列出。已完成任务数据默认保留 14 天，可在“存储”页删除。
+
+开发与离线验证可用的宿主环境变量：`LUMINA_WORKSHOP_UV`（uv 路径）、
+`LUMINA_WORKSHOP_PYTHON`（显式解释器，宿主不会安装或删除它）、
+`LUMINA_WORKSHOP_WHEELHOUSE`（按文件名提供本地 wheel，仍按锁中哈希校验）、
+`LUMINA_WORKSHOP_OFFLINE=1`、`LUMINA_WORKSHOP_WHEEL_MIRROR` 与
+`LUMINA_WORKSHOP_PYTHON_MIRROR`（仅 HTTPS 镜像）。
 
 ## 发布前检查
 

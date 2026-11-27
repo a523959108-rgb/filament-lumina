@@ -1,3 +1,4 @@
+import { useState, type ComponentType } from "react";
 import {
   act,
   fireEvent,
@@ -14,7 +15,25 @@ import {
   it,
   vi,
 } from "vitest";
+import { AxiosError } from "axios";
 
+vi.unmock("../i18n/context");
+const postClientLog = vi.hoisted(() => vi.fn());
+vi.mock("../utils/clientLog", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../utils/clientLog")>(),
+  postClientLog,
+}));
+const materialLibrary = vi.hoisted(() => ({
+  importGradientCardMaterials: vi.fn(),
+  listGradientCardMaterials: vi.fn(),
+}));
+vi.mock("../api/extractor", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/extractor")>(),
+  ...materialLibrary,
+}));
+
+import apiClient from "../api/client";
+import { workshopApi } from "../api/workshop";
 import type {
   InstalledWorkshopModule,
   InstalledWorkshopVersion,
@@ -22,6 +41,8 @@ import type {
   WorkshopManagerApi,
 } from "../api/workshop";
 import { I18nProvider } from "../i18n/context";
+import { useActionHistoryStore } from "../stores/actionHistoryStore";
+import { useErrorTicketPromptStore } from "../stores/errorTicketPromptStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { WorkshopPanel } from "../workshop/WorkshopPanel";
 import type { ManagedWorkshopProjectStorage } from "../workshop/projectStorage";
@@ -31,7 +52,11 @@ import { useWorkshopStore } from "../workshop/store";
 function version(
   value: string,
   permissions: Array<
-    "image.pick" | "project.storage" | "color-library.read" | "handoff.image"
+    | "image.pick"
+    | "project.storage"
+    | "color-library.read"
+    | "handoff.image"
+    | "material.import"
   > = ["project.storage"],
 ): InstalledWorkshopVersion {
   return {
@@ -193,6 +218,40 @@ function ReadyFrame(props: WorkshopFrameProps) {
   );
 }
 
+function MaterialImportFrame(props: WorkshopFrameProps) {
+  const [result, setResult] = useState("idle");
+  return (
+    <section aria-label="material import module">
+      <button
+        type="button"
+        onClick={async () => {
+          const value = await props.handlers?.["material.import"]?.(
+            {
+              archiveBytes: new Uint8Array(2048).buffer,
+              fileName: "pla-white.zip",
+              summary: {
+                materials: [{ name: "PLA White", brand: "Example", notes: ["3 readings"] }],
+              },
+            },
+            {
+              identity: {
+                moduleId: props.module.moduleId,
+                moduleVersion: props.module.moduleVersion,
+              },
+              signal: new AbortController().signal,
+              commitMaterialImport: async () => true,
+            },
+          );
+          setResult(JSON.stringify(value));
+        }}
+      >
+        request import
+      </button>
+      <output data-testid="material-import-result">{result}</output>
+    </section>
+  );
+}
+
 function renderManager(
   api: WorkshopManagerApi,
   storage = fakeStorage(),
@@ -200,6 +259,7 @@ function renderManager(
     | "desktop-secure"
     | "browser-restricted"
     | "unsafe-development" = "browser-restricted",
+  FrameComponent: ComponentType<WorkshopFrameProps> = ReadyFrame,
 ) {
   return render(
     <I18nProvider>
@@ -207,7 +267,7 @@ function renderManager(
         api={api}
         projectStorage={storage}
         runtimeMode={runtimeMode}
-        FrameComponent={ReadyFrame}
+        FrameComponent={FrameComponent}
       />
     </I18nProvider>,
   );
@@ -215,10 +275,15 @@ function renderManager(
 
 describe("Workshop installable module manager", () => {
   afterEach(() => {
+    useActionHistoryStore.getState()._resetForTests();
+    useErrorTicketPromptStore.getState()._resetForTests();
     vi.useRealTimers();
   });
 
   beforeEach(() => {
+    postClientLog.mockClear();
+    useActionHistoryStore.getState()._resetForTests();
+    useErrorTicketPromptStore.getState()._resetForTests();
     localStorage.clear();
     useSettingsStore.setState({ language: "zh", theme: "light" });
     useWorkshopStore.setState({
@@ -418,6 +483,133 @@ describe("Workshop installable module manager", () => {
     expect(await screen.findByText("测试模块")).toBeInTheDocument();
   });
 
+  it("shows neutral retry guidance when the catalog cannot be reached", async () => {
+    const api = fakeApi([]);
+    vi.mocked(api.fetchCatalog).mockRejectedValue(new Error("network timeout"));
+    renderManager(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "发现" }));
+    expect(await screen.findByText("暂时无法加载创意工坊目录，请检查网络后重试。")).toBeInTheDocument();
+    vi.mocked(api.fetchCatalog).mockResolvedValue(catalog(true));
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("测试模块")).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      language: "zh" as const,
+      status: 502,
+      updateLabel: "更新",
+      message: "插件包暂时无法下载，请检查网络后重试。",
+      activeVersion: "当前版本 1.0.0",
+      retainedProject: "保留了本地工程",
+      stagedVersion: "待激活版本 1.1.0",
+    },
+    {
+      language: "en" as const,
+      status: 504,
+      updateLabel: "Update",
+      message: "The connection timed out. Check your network and try again.",
+      activeVersion: "Current version 1.0.0",
+      retainedProject: "Local projects retained",
+      stagedVersion: "Candidate version 1.1.0",
+    },
+  ])("shows neutral download guidance in $language and allows an update retry", async (labels) => {
+    useSettingsStore.setState({ language: labels.language });
+    const api = { ...fakeApi(), installRegistry: workshopApi.installRegistry };
+    const storage = fakeStorage(true);
+    const originalAdapter = apiClient.defaults.adapter;
+    let connectionFailed = true;
+    apiClient.defaults.adapter = async (config) => {
+      const response = {
+        status: connectionFailed ? labels.status : 200,
+        statusText: connectionFailed ? "Download failed" : "OK",
+        data: connectionFailed
+          ? {
+              detail: {
+                code: "registry-download-network-error",
+                message: "The upstream connection ended before the package arrived.",
+              },
+            }
+          : {
+              module: installed({
+                candidate_version: "1.1.0",
+                versions: ["1.0.0", "1.1.0"],
+                version_details: [version("1.0.0"), version("1.1.0")],
+              }),
+            },
+        headers: {},
+        config,
+      };
+      if (connectionFailed) {
+        throw new AxiosError("Request failed", "ERR_BAD_RESPONSE", config, undefined, response);
+      }
+      return response;
+    };
+
+    try {
+      renderManager(api, storage);
+      fireEvent.click(await screen.findByRole("button", { name: labels.updateLabel }));
+
+      expect(await screen.findByText(labels.message)).toBeInTheDocument();
+      expect(useErrorTicketPromptStore.getState().pending).toBeNull();
+      expect(postClientLog).toHaveBeenCalledWith("api: request failed", expect.objectContaining({
+        details: expect.objectContaining({
+          url: "/workshop/v1/install/registry",
+          status_code: labels.status,
+        }),
+      }));
+      expect(useActionHistoryStore.getState().history).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          action_type: "api_error",
+          error: expect.objectContaining({ path: "/workshop/v1/install/registry", status_code: labels.status }),
+        }),
+      ]));
+      expect(screen.getByText(labels.activeVersion)).toBeInTheDocument();
+      expect(screen.getByText(labels.retainedProject)).toBeInTheDocument();
+      expect(storage.deleteModuleProjects).not.toHaveBeenCalled();
+      expect(storage.restoreSnapshot).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: labels.updateLabel })).toBeEnabled();
+
+      connectionFailed = false;
+      fireEvent.click(screen.getByRole("button", { name: labels.updateLabel }));
+
+      expect(await screen.findByText(labels.stagedVersion)).toBeInTheDocument();
+      expect(screen.queryByText(labels.message)).not.toBeInTheDocument();
+      expect(screen.getByText(labels.activeVersion)).toBeInTheDocument();
+      expect(screen.getByText(labels.retainedProject)).toBeInTheDocument();
+      expect(storage.deleteModuleProjects).not.toHaveBeenCalled();
+    } finally {
+      apiClient.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it("keeps package-validation failures separate from GitHub connection failures", async () => {
+    const api = { ...fakeApi(), installRegistry: workshopApi.installRegistry };
+    const originalAdapter = apiClient.defaults.adapter;
+    apiClient.defaults.adapter = async (config) => {
+      throw new AxiosError("Invalid package", "ERR_BAD_RESPONSE", config, undefined, {
+        status: 502,
+        statusText: "Bad Gateway",
+        data: { detail: "The Registry package is invalid." },
+        headers: {},
+        config,
+      });
+    };
+    try {
+      renderManager(api);
+
+      fireEvent.click(await screen.findByRole("button", { name: "更新" }));
+
+      expect(await screen.findByText("模块操作失败，现有安装和工程数据未被替换。")).toBeInTheDocument();
+      expect(screen.queryByText(/网络加速器/)).not.toBeInTheDocument();
+      expect(useErrorTicketPromptStore.getState().pending).toBeNull();
+      expect(postClientLog).toHaveBeenCalledWith("api: request failed", expect.anything());
+    } finally {
+      apiClient.defaults.adapter = originalAdapter;
+    }
+  });
+
   it("keeps converter recovery and explains how to install a missing recipe module", async () => {
     useWorkshopStore.getState().openRecipe({
       manifestSchemaVersion: 1,
@@ -474,6 +666,7 @@ describe("Workshop installable module manager", () => {
       expect(api.installGithub).toHaveBeenCalledWith(
         "https://github.com/example/fixture",
         "1.0.0",
+        expect.any(Function),
       ),
     );
   });
@@ -642,6 +835,131 @@ describe("Workshop installable module manager", () => {
         "1.1.0",
       ),
     );
+  });
+
+  it("asks again when an update adds material.import", async () => {
+    const current = installed();
+    const expandedCatalog = catalog();
+    expandedCatalog.modules[0].versions[0].permissions.push({
+      name: "material.import",
+      reason: "Import the measured material",
+    });
+    const api = fakeApi([current]);
+    vi.mocked(api.fetchCatalog).mockResolvedValue(expandedCatalog);
+    renderManager(api, fakeStorage(), "desktop-secure");
+
+    fireEvent.click(await screen.findByRole("button", { name: "更新" }));
+    expect(await screen.findByText("新增权限")).toBeInTheDocument();
+    expect(screen.getByText("经你确认后导入耗材到耗材库")).toBeInTheDocument();
+    expect(screen.getByText("Import the measured material")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(api.installRegistry).not.toHaveBeenCalled();
+  });
+
+  it("confirms each material import in a host dialog before uploading", async () => {
+    useSettingsStore.setState({ language: "en", theme: "light" });
+    useWorkshopStore.setState({
+      activeModule: { moduleId: "fixture.hello", version: "1.0.0" },
+    });
+    materialLibrary.importGradientCardMaterials.mockReset().mockResolvedValue({
+      status: "success",
+      message: "ok",
+      imported_count: 1,
+      imported_materials: [
+        { material_name: "PLA White", directory_name: "example-pla-white" },
+      ],
+    });
+    materialLibrary.listGradientCardMaterials.mockReset().mockResolvedValue({
+      status: "success",
+      message: "ok",
+      materials: [],
+    });
+    const module = installed({
+      version_details: [version("1.0.0", ["material.import"])],
+    });
+    renderManager(fakeApi([module]), fakeStorage(), "desktop-secure", MaterialImportFrame);
+
+    fireEvent.click(await screen.findByRole("button", { name: "request import" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import material" });
+    expect(within(dialog).getByText("Fixture module (fixture.hello 1.0.0)")).toBeInTheDocument();
+    expect(within(dialog).getByText("Fixture Publisher")).toBeInTheDocument();
+    expect(within(dialog).getByText("pla-white.zip · 2.0 KB")).toBeInTheDocument();
+    expect(within(dialog).getByText("Provided by the module (not verified by Lumina)")).toBeInTheDocument();
+    expect(within(dialog).getByText("PLA White")).toBeInTheDocument();
+    expect(within(dialog).getByText("3 readings")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("material-import-result")).toHaveTextContent(
+        JSON.stringify({ status: "cancelled" }),
+      ),
+    );
+    expect(screen.queryByRole("dialog", { name: "Import material" })).toBeNull();
+    expect(materialLibrary.importGradientCardMaterials).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "request import" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "Import material" }))
+        .getByRole("button", { name: "Import" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("material-import-result")).toHaveTextContent(
+        JSON.stringify({
+          status: "imported",
+          materials: [{ directoryName: "example-pla-white", name: "PLA White" }],
+        }),
+      ),
+    );
+    expect(materialLibrary.importGradientCardMaterials).toHaveBeenCalledTimes(1);
+    expect(materialLibrary.listGradientCardMaterials).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows archive transfer progress and then asks for the staged localized update permission", async () => {
+    const api = fakeApi([installed()]);
+    const published = catalog();
+    published.modules[0].versions[0].workshop_api_min = "1.2.0";
+    published.modules[0].versions[0].permissions.push({ name: "image.pick", reason: "Choose a pattern." });
+    vi.mocked(api.fetchCatalog).mockResolvedValue(published);
+    const updatedVersion = version("1.1.0", ["project.storage"]);
+    updatedVersion.permissions.push({
+      name: "image.pick",
+      reason: "Choose a pattern.",
+      reason_i18n: { zh_cn: "选择用于编辑的图案", en_us: "Choose a pattern." },
+    });
+    const staged = installed({
+      candidate_version: "1.1.0",
+      versions: ["1.0.0", "1.1.0"],
+      version_details: [version("1.0.0"), updatedVersion],
+    });
+    let finishInstall: (() => void) | undefined;
+    vi.mocked(api.installRegistry).mockImplementation((_id, _version, report) => {
+      report?.({
+        phase: "downloading",
+        download: {
+          source: "github.com", file_name: "fixture.hello-1.1.0.lumina-workshop",
+          file_index: 1, file_count: 1, received_bytes: 1024, total_bytes: 4096,
+          bytes_per_second: 1024, eta_seconds: 3,
+        },
+      });
+      return new Promise((resolve) => {
+        finishInstall = () => resolve({ module: staged });
+      });
+    });
+    renderManager(api, fakeStorage(), "desktop-secure");
+
+    fireEvent.click(await screen.findByRole("button", { name: "更新" }));
+    expect(await screen.findByText("下载扩展包")).toBeInTheDocument();
+    expect(screen.getByText("本阶段已下载 1.0 KB / 4.0 KB")).toBeInTheDocument();
+    expect(screen.getByText("1.0 KB/秒")).toBeInTheDocument();
+    expect(screen.getByText("本阶段约剩 3 秒")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    finishInstall?.();
+    const dialog = await screen.findByRole("dialog", { name: "确认模块权限" });
+    expect(within(dialog).getByText("选择用于编辑的图案")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Choose a pattern.")).toBeNull();
+    expect(api.activateModule).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("普通模块上传与校准页")).toBeNull();
   });
 
   it("keeps official uninstall tombstones and offers offline seed restore", async () => {

@@ -37,6 +37,7 @@ import type {
   SimilarRecipesRequest,
   SimilarRecipesResponse,
   EditorCommitStatusResponse,
+  KeychainAnchorRequest,
   AutoDetectColorsResponse,
   ModelSurfaceHitTriangle,
   ModelSurfaceModelTransform,
@@ -44,6 +45,15 @@ import type {
   ModelSurfaceUploadResponse,
   VectorPreviewRendererResponse,
 } from "./types";
+import type { PreviewSpacePoint } from "../utils/previewSpace";
+
+export async function fetchKeychainAnchor(
+  request: KeychainAnchorRequest,
+  signal: AbortSignal,
+): Promise<PreviewSpacePoint> {
+  const { data } = await apiClient.post<PreviewSpacePoint>("/convert/keychain-anchor", request, { signal });
+  return data;
+}
 
 /** 上传图片 + 参数，获取 2D 预览（返回 JSON，含 session_id 和 preview_url） */
 export async function convertPreview(
@@ -751,10 +761,12 @@ export async function getGlbStatus(
 ): Promise<GlbStatusResponse> {
   const response = await apiClient.get<GlbStatusResponse>(
     `/convert/glb-status/${encodeURIComponent(sessionId)}`,
-    { timeout: 30_000 },
+    { timeout: GLB_STATUS_TIMEOUT_MS, suppressErrorTicket: true },
   );
   return response.data;
 }
+
+export const GLB_STATUS_TIMEOUT_MS = 30_000;
 
 /** Rebuild only the browser GLB renderer for an active native Vector session. */
 export async function rebuildVectorPreviewRenderer(

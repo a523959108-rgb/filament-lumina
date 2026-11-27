@@ -35,6 +35,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from core.pipeline.processing_ops.color_histogram import RGB_LOOKUP_BLOCK_PIXELS, pack_rgb24
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -45,7 +47,13 @@ ALLOWED_LAYER_HEIGHTS_MM: tuple[float, ...] = (0.04, 0.08, 0.1)
 DEFAULT_LAYER_HEIGHT_MM: float = 0.08
 DEFAULT_LAYER_COUNT: int = 5
 MIN_LAYER_COUNT: int = 5
-MAX_LAYER_COUNT: int = 10
+MAX_LAYER_COUNT: int = 30
+"""Upper bound for printed colour layers. Deep stacks (>10) are served by the
+layer-wise DP in :mod:`core.material_layer_dp` through the candidate runtime.
+打印叠色层数上限；>10 层由候选运行时内的逐层 DP 求解。"""
+MITM_MAX_LAYER_COUNT: int = 10
+"""Upper bound for the exhaustive meet-in-the-middle helpers below, whose
+cost grows as ``M ** (N / 2)``. 下方 MITM 穷举函数的层数上限（代价随 M**(N/2) 增长）。"""
 DEFAULT_BEAM_WIDTH: int = 32
 
 
@@ -453,27 +461,24 @@ def map_pixels_to_materials(
     """
     layer_count = recipes_unique.shape[1]
 
-    unique_codes = (
-        unique_colors[:, 0].astype(np.int32) * 65536
-        + unique_colors[:, 1].astype(np.int32) * 256
-        + unique_colors[:, 2].astype(np.int32)
-    )
+    unique_codes = pack_rgb24(unique_colors)
     sort_idx = np.argsort(unique_codes)
     sorted_codes = unique_codes[sort_idx]
     sorted_matched = matched_rgb_unique[sort_idx]
     sorted_recipes = recipes_unique[sort_idx]
 
     flat_quantized = quantized_image.reshape(-1, 3)
-    pixel_codes = (
-        flat_quantized[:, 0].astype(np.int32) * 65536
-        + flat_quantized[:, 1].astype(np.int32) * 256
-        + flat_quantized[:, 2].astype(np.int32)
-    )
-    insert_positions = np.searchsorted(sorted_codes, pixel_codes)
-    matched_rgb = sorted_matched[insert_positions].reshape(target_h, target_w, 3)
-    material_matrix = sorted_recipes[insert_positions].reshape(target_h, target_w, layer_count)
+    matched_rgb = np.empty((len(flat_quantized), 3), dtype=matched_rgb_unique.dtype)
+    material_matrix = np.empty((len(flat_quantized), layer_count), dtype=recipes_unique.dtype)
+    # Keep only the required result arrays at image scale. The RGB keys,
+    # search indices, and gathered recipe temporaries are bounded by a block.
+    for start in range(0, len(flat_quantized), RGB_LOOKUP_BLOCK_PIXELS):
+        selection = slice(start, start + RGB_LOOKUP_BLOCK_PIXELS)
+        positions = np.searchsorted(sorted_codes, pack_rgb24(flat_quantized[selection]))
+        matched_rgb[selection] = sorted_matched[positions]
+        material_matrix[selection] = sorted_recipes[positions]
 
-    return matched_rgb, material_matrix
+    return matched_rgb.reshape(target_h, target_w, 3), material_matrix.reshape(target_h, target_w, layer_count)
 
 
 # ---------------------------------------------------------------------------
@@ -686,9 +691,10 @@ def solve_image_colors_optimal(
         delta_e: (C,) float64 CIE76 ΔE between target and prediction.
             (CIE76 ΔE)
     """
-    if layer_count < MIN_LAYER_COUNT or layer_count > MAX_LAYER_COUNT:
+    if layer_count < MIN_LAYER_COUNT or layer_count > MITM_MAX_LAYER_COUNT:
         raise ValueError(
-            f"layer_count must be {MIN_LAYER_COUNT}-{MAX_LAYER_COUNT}, got {layer_count}"
+            f"layer_count must be {MIN_LAYER_COUNT}-{MITM_MAX_LAYER_COUNT}, got {layer_count} "
+            "(deeper stacks: use the material candidate runtime)"
         )
     if not materials:
         raise ValueError("At least one material must be provided (materials is empty)")
@@ -970,9 +976,10 @@ def suggest_colors_for_target(
     target_srgb = np.asarray(target_srgb, dtype=np.uint8)
     if target_srgb.shape != (3,):
         raise ValueError(f"target_srgb must be shaped (3,), got {target_srgb.shape}")
-    if layer_count < MIN_LAYER_COUNT or layer_count > MAX_LAYER_COUNT:
+    if layer_count < MIN_LAYER_COUNT or layer_count > MITM_MAX_LAYER_COUNT:
         raise ValueError(
-            f"layer_count must be {MIN_LAYER_COUNT}-{MAX_LAYER_COUNT}, got {layer_count}"
+            f"layer_count must be {MIN_LAYER_COUNT}-{MITM_MAX_LAYER_COUNT}, got {layer_count} "
+            "(deeper stacks: use the material candidate runtime)"
         )
     if not materials:
         raise ValueError("At least one material must be provided (materials is empty)")
@@ -1307,6 +1314,11 @@ def ensure_not_worse_than_smaller_N(
           wins and how often
         - ``mean_delta_e_before`` / ``mean_delta_e_after``
         - ``max_delta_e_before`` / ``max_delta_e_after``
+
+        Only ``k <= MITM_MAX_LAYER_COUNT`` is evaluated: the strict MITM
+        solver cannot enumerate deeper stacks. For ``target_layer_count``
+        above ``MITM_MAX_LAYER_COUNT + 1`` the guarantee therefore covers
+        ``k`` up to ``MITM_MAX_LAYER_COUNT`` only.
     """
     if target_layer_count > MAX_LAYER_COUNT:
         raise ValueError(
@@ -1393,7 +1405,9 @@ def ensure_not_worse_than_smaller_N(
     target_labs = rgb_to_lab(unique_colors_srgb.astype(np.uint8)).astype(np.float64)
 
     M = len(materials)
-    for k in range(int(min_layer_count), int(target_layer_count)):
+    # MITM is exact only up to MITM_MAX_LAYER_COUNT; deeper k would raise.
+    k_stop = min(int(target_layer_count), MITM_MAX_LAYER_COUNT + 1)
+    for k in range(int(min_layer_count), k_stop):
         # Guard: estimate peak memory of the MITM delta_e broadcast.
         # The solver's inner loop allocates ``delta_e`` of shape
         # ``(C, chunk, K_bot)`` float64.  ``chunk`` is derived from a

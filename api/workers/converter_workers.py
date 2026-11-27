@@ -45,6 +45,23 @@ class LargeFormatCachedAnalysisError(RuntimeError):
     """
 
 
+def worker_prepare_material_catalog(
+    names: list[str], backing_index: int, layer_height_mm: float,
+    min_layers: int, max_layers: int, materials_dir: str | None,
+) -> bool:
+    from core.material_dynamic_solver import (
+        DynamicMaterialSolveConfig, prepare_dynamic_material_catalog,
+    )
+    from core.material_lut_synthesis import load_multiple_materials
+
+    materials = load_multiple_materials(names, materials_dir=materials_dir)
+    catalog = prepare_dynamic_material_catalog(
+        materials, backing_index, layer_height_mm, "white",
+        DynamicMaterialSolveConfig(min_layers, max_layers, 0.0),
+    )
+    return catalog.cache_hit
+
+
 def _cleanup_worker_temp_paths(*paths: str | None) -> None:
     """Best-effort cleanup for worker-created temp files on local failure."""
 
@@ -523,6 +540,7 @@ def worker_generate_preview(
     import numpy as np
     from PIL import Image
 
+    from core.preview_sizing import preview_dimensions
     from config import ModelingMode
     from api.structured_logging import get_logger
     from core.converter import generate_preview_cached
@@ -696,8 +714,19 @@ def worker_generate_preview(
             os.close(fd)
             created_temp_paths.append(png_path)
             if isinstance(preview_img, np.ndarray):
+                height, width = preview_img.shape[:2]
+                display_size = preview_dimensions(width, height)
+                if display_size != (width, height):
+                    import cv2
+
+                    preview_img = cv2.resize(
+                        preview_img, display_size, interpolation=cv2.INTER_NEAREST,
+                    )
                 Image.fromarray(preview_img).save(png_path)
             else:
+                display_size = preview_dimensions(*preview_img.size)
+                if display_size != preview_img.size:
+                    preview_img = preview_img.resize(display_size, Image.Resampling.NEAREST)
                 preview_img.save(png_path)
             result["preview_png_path"] = png_path
         _t_png = _time.perf_counter() - _t
@@ -1377,6 +1406,18 @@ def worker_generate_model(
     return result
 
 
+def _submit_puzzle_worker(image_path: str, lut_path: str, params: dict) -> dict:
+    """Run a piece export from the worker module so spawned children skip API router imports."""
+    from pathlib import Path
+
+    from api.worker_diagnostics import report_worker_stage
+
+    if output_path := params.get("export_only_3mf_path"):
+        label = Path(output_path).stem.removeprefix("piece-")
+        report_worker_stage("piece_input", piece_label=label)
+    return worker_generate_model(image_path, lut_path, params)
+
+
 def worker_generate_model_surface_overlay(
     image_path: str,
     lut_path: str,
@@ -1688,6 +1729,7 @@ def worker_generate_large_format_svg_native(
         _resolve_vector_layer_height_mm,
         _update_bambu_base_layer_ctx_for_vector,
     )
+    from core.print_layers import resolve_coating_height_mm
     from core.vector_structure import resolve_structure_plan
     from core.vector_engine import (
         _concatenate_meshes_fast,
@@ -1749,9 +1791,7 @@ def worker_generate_large_format_svg_native(
     layer_height_mm = _resolve_vector_layer_height_mm(worker_ctx)
     vector_processor.layer_height_mm = layer_height_mm
     vector_processor.enable_coating = bool(worker_ctx.get("enable_coating", False))
-    vector_processor.coating_height_mm = float(
-        worker_ctx.get("coating_height_mm", 0.08)
-    )
+    vector_processor.coating_height_mm = resolve_coating_height_mm(worker_ctx.get("coating_height_mm"))
     vector_processor.auto_dynamic_range = bool(params.get("auto_dynamic_range", False))
     analysis = vector_processor.analyze_svg(
         svg_path=image_path,
@@ -1950,7 +1990,6 @@ def worker_generate_large_format_svg_native(
     vector_processor.enable_outline = bool(params.get("enable_outline", False))
     vector_processor.outline_width_mm = float(params.get("outline_width", 2.0))
     vector_processor.enable_coating = bool(params.get("enable_coating", False))
-    vector_processor.coating_height_mm = float(params.get("coating_height_mm", 0.08))
     analysis.structure_plan = resolve_structure_plan(
         analysis, vector_processor.outline_width_mm if vector_processor.enable_outline else 0.0,
     )
@@ -2223,6 +2262,7 @@ def worker_generate_large_format_svg_native(
                     params.get("backing_infill_density_percent", 100)
                 ),
                 cover_source=tile_cover,
+                coating_height_mm=(tile_processor.coating_height_mm if tile_processor.enable_coating else 0.0),
                 device_profile_id=params.get("device_profile_id") or None,
                 custom_3mf_template_id=params.get("custom_3mf_template_id") or None,
                 build_plate_id=params.get("build_plate_id") or None,

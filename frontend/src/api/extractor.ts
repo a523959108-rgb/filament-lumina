@@ -1,4 +1,5 @@
 import apiClient from "./client";
+import { isLocalLuminaAppOrigin } from "../utils/localAppOrigin";
 import {
   createPreviewResource,
   type PreviewResourceUploadProgress,
@@ -25,6 +26,12 @@ import type {
 } from "./types";
 
 const COLORCHECKER_SOURCE_PREVIEW_TIMEOUT_MS = 3_600_000;
+
+/** Install current confirmed metadata, not the pre-confirmation download snapshot. */
+export async function installExtractedLut(sessionId: string): Promise<{ name: string; contribution?: { id?: string; state: string } | null }> {
+  const response = await apiClient.post<{ name: string; contribution?: { id?: string; state: string } | null }>(`/extractor/${encodeURIComponent(sessionId)}/install-lut`);
+  return response.data;
+}
 
 /** 提取颜色 - multipart/form-data */
 export async function extractColors(
@@ -609,10 +616,17 @@ export async function listGradientCardMaterials(options?: {
   includeFileUrls?: boolean;
   signal?: AbortSignal;
 }): Promise<GradientCardMaterialLibraryResponse> {
+  const isLocalOrigin = isLocalLuminaAppOrigin();
+  const path = isLocalOrigin
+    ? "/extractor/gradient-card-materials"
+    : "/extractor/public-gradient-card-materials";
   const response = await apiClient.get<GradientCardMaterialLibraryResponse>(
-    "/extractor/gradient-card-materials",
+    path,
     {
-      params: options?.includeFileUrls ? { include_file_urls: true } : undefined,
+      params:
+        isLocalOrigin && options?.includeFileUrls
+          ? { include_file_urls: true }
+          : undefined,
       timeout: 3_600_000,
       ...(options?.signal ? { signal: options.signal } : {}),
     },
@@ -633,6 +647,7 @@ export async function exportGradientCardMaterials(
 
 export async function importGradientCardMaterials(
   archives: File[],
+  options?: { signal?: AbortSignal },
 ): Promise<GradientCardMaterialBulkImportResponse> {
   const fd = new FormData();
   archives.forEach((archive) => {
@@ -641,7 +656,7 @@ export async function importGradientCardMaterials(
   const response = await apiClient.post<GradientCardMaterialBulkImportResponse>(
     "/extractor/gradient-card-materials/import",
     fd,
-    { timeout: 3_600_000 },
+    { timeout: 3_600_000, signal: options?.signal },
   );
   return response.data;
 }

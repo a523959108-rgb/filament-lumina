@@ -28,23 +28,35 @@ import math
 import os
 import time
 from copy import deepcopy
-from typing import Any
+from dataclasses import replace
+from typing import Any, TYPE_CHECKING
 
 import cv2  # noqa: F401  -- imported for side-effect parity with coordinator
 import numpy as np
+import shapely
+from shapely.geometry.base import BaseGeometry
 import trimesh
 
 from api.structured_logging import get_logger
-from config import BedManager, PrinterConfig, normalize_nozzle_size
+from config import BedManager, normalize_nozzle_size
+from core.print_layers import resolve_coating_height_mm, resolve_layer_height_mm
 from core.errors import (
     CachedPreviewAnalysisError,
 )
-from core.geometry_utils import (
-    create_keychain_loop,
-    keychain_loop_hole_clearance,
-    resolve_keychain_contact_anchor_y,
+from core.color_similarity import parse_hex_color, rgb_to_hex
+from core.geometry_utils import create_keychain_loop
+from core.keychain_attachment import (
+    LoopProfile,
+    solve_vector_loop,
+    validate_keychain_export,
+    vector_keychain_body,
+)
+from core.material_dynamic_solver import (
+    DynamicMaterialCandidateError,
+    DynamicMaterialSolverError,
 )
 from core.pipeline import p06_bed_rendering, s09_export_3mf
+from core.pipeline.material_dynamic_layers import _record_dynamic_material_error
 from core.pipeline.pipeline_utils import extract_color_palette
 from core.pipeline.processing_ops.svg_rasterizer import rasterize_svg
 from core.pipeline.s08_auxiliary_meshes import (
@@ -57,7 +69,11 @@ from core.vector_layer_geometry import (
     build_vector_layered_volume,
     resolve_vector_writer_grid_mm,
 )
-from core.svg_coordinate_domain import SvgCoordinateDomain, prepare_print_slabs
+from core.svg_coordinate_domain import (
+    SvgCoordinateDomain,
+    prepare_print_slabs,
+    should_mirror_vector_export,
+)
 
 # ---------------------------------------------------------------------------
 # Cycle-safe re-import of small helpers that originate in coordinator.
@@ -96,7 +112,56 @@ except ImportError as exc:
 # extraction does not change observable log records (pre-existing tests +
 # log audits attach handlers to ``lumina.core.pipeline.coordinator``).
 # 日志命名空间故意继续沿用 coordinator，保证抽离后日志可观察性零变更。
+if TYPE_CHECKING:
+    from core.vector_engine import VectorAnalysis
+
 log = get_logger("core.pipeline.coordinator")
+
+
+def _prepare_vector_free_colors(
+    analysis: VectorAnalysis, free_colors: set[str] | list[str] | None,
+) -> VectorAnalysis:
+    """Assign marked optical regions their own mesh channel before extrusion.
+
+    Keep the solved analysis intact: only this export's recipes and palette
+    change. The existing layered mesher then produces disjoint volumes for
+    regular materials and user-assignable free colors, including both faces.
+    """
+    if not free_colors:
+        return analysis
+    marked = {parse_hex_color(value) for value in free_colors}
+    present = {
+        tuple(item["matched_rgb"]) for item in analysis.matched_shapes
+        if item.get("matched_rgb") is not None
+        and tuple(item["matched_rgb"]) in marked
+    }
+    if not present:
+        return analysis
+    slots = list(analysis.slot_names)
+    colors = dict(analysis.preview_colors)
+    channels: dict[tuple[int, int, int], int] = {}
+    for rgb in sorted(present):
+        index = len(slots)
+        name = f"Free_{rgb_to_hex(rgb)[1:]}"
+        slots.append(name)
+        colors[index] = colors[name] = [*rgb, 255]
+        channels[rgb] = index
+    shapes: list[dict[str, Any]] = []
+    for item in analysis.matched_shapes:
+        rgb = tuple(item["matched_rgb"]) if item.get("matched_rgb") is not None else None
+        if rgb in channels:
+            shapes.append({
+                **item,
+                "recipe": [channels[rgb] if int(channel) >= 0 else channel
+                           for channel in item["recipe"]],
+            })
+        else:
+            shapes.append(item)
+    return replace(
+        analysis, matched_shapes=shapes, slot_names=slots,
+        num_channels=len(slots), preview_colors=colors,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Layer-0 (appearance face) diagnostics
@@ -408,165 +473,6 @@ def _finite_scene_bounds(scene: trimesh.Scene) -> np.ndarray | None:
     return bounds
 
 
-_TOP_PROFILE_CHUNK_CELLS = 2_000_000
-
-
-def _scene_band_edges(
-    scene: trimesh.Scene,
-    band_min: float,
-    band_max: float,
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """Collect transformed XY mesh edges whose X span touches a band."""
-    starts_parts: list[np.ndarray] = []
-    ends_parts: list[np.ndarray] = []
-    for node_name in scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = scene.graph[node_name]
-            geometry = scene.geometry[geometry_name]
-            vertices = trimesh.transform_points(
-                np.asarray(geometry.vertices, dtype=np.float64),
-                transform,
-            )[:, :2]
-            edges = np.asarray(geometry.edges_unique, dtype=np.int64)
-        except (AttributeError, KeyError, TypeError, ValueError):
-            continue
-        if vertices.ndim != 2 or vertices.shape[1] != 2 or edges.ndim != 2:
-            continue
-        if edges.shape[1] != 2 or len(edges) == 0:
-            continue
-
-        starts = vertices[edges[:, 0]]
-        ends = vertices[edges[:, 1]]
-        keep = np.all(np.isfinite(starts), axis=1) & np.all(
-            np.isfinite(ends), axis=1
-        )
-        keep &= np.minimum(starts[:, 0], ends[:, 0]) <= band_max
-        keep &= np.maximum(starts[:, 0], ends[:, 0]) >= band_min
-        if np.any(keep):
-            starts_parts.append(starts[keep])
-            ends_parts.append(ends[keep])
-
-    if not starts_parts:
-        return None
-    return np.concatenate(starts_parts), np.concatenate(ends_parts)
-
-
-def _top_profile_at(
-    sample_x: np.ndarray,
-    starts: np.ndarray,
-    ends: np.ndarray,
-) -> np.ndarray:
-    """Return the highest edge Y crossing each sample X (``-inf`` if none)."""
-    delta_x = ends[:, 0] - starts[:, 0]
-    non_vertical = np.abs(delta_x) > 1e-12
-    safe_delta_x = np.where(non_vertical, delta_x, 1.0)
-    edge_min_x = np.minimum(starts[:, 0], ends[:, 0]) - 1e-9
-    edge_max_x = np.maximum(starts[:, 0], ends[:, 0]) + 1e-9
-    vertical_top = np.maximum(starts[:, 1], ends[:, 1])
-
-    tops = np.full(len(sample_x), -np.inf)
-    chunk = max(1, _TOP_PROFILE_CHUNK_CELLS // max(1, len(starts)))
-    for offset in range(0, len(sample_x), chunk):
-        xs = sample_x[offset:offset + chunk, None]
-        covers = (xs >= edge_min_x) & (xs <= edge_max_x)
-        ratios = np.clip((xs - starts[:, 0]) / safe_delta_x, 0.0, 1.0)
-        edge_y = np.where(
-            non_vertical,
-            starts[:, 1] + ratios * (ends[:, 1] - starts[:, 1]),
-            vertical_top,
-        )
-        tops[offset:offset + chunk] = np.max(
-            np.where(covers, edge_y, -np.inf), axis=1
-        )
-    return tops
-
-
-def _scene_top_edge_range_for_contact_band(
-    scene: trimesh.Scene,
-    center_x: float,
-    contact_width: float,
-) -> tuple[float, float] | None:
-    """Return the lowest and highest scene top edge inside a horizontal band.
-
-    The top profile is piecewise linear between edge endpoints, so sampling
-    the band ends plus every endpoint inside the band finds both extremes.
-    """
-    if contact_width <= 0:
-        return None
-
-    band_min = center_x - contact_width / 2.0
-    band_max = center_x + contact_width / 2.0
-    band_edges = _scene_band_edges(scene, band_min, band_max)
-    if band_edges is None:
-        return None
-    starts, ends = band_edges
-
-    endpoint_x = np.concatenate((starts[:, 0], ends[:, 0]))
-    inside_x = endpoint_x[(endpoint_x >= band_min) & (endpoint_x <= band_max)]
-    sample_x = np.unique(np.concatenate(([band_min, band_max], inside_x)))
-    tops = _top_profile_at(sample_x, starts, ends)
-    tops = tops[np.isfinite(tops)]
-    if len(tops) == 0:
-        return None
-    return float(np.min(tops)), float(np.max(tops))
-
-
-def _vector_loop_attach_point(
-    ctx: dict,
-    scene_bounds: np.ndarray,
-    scene: trimesh.Scene | None = None,
-) -> tuple[float, float]:
-    min_x, min_y = float(scene_bounds[0, 0]), float(scene_bounds[0, 1])
-    max_x, max_y = float(scene_bounds[1, 0]), float(scene_bounds[1, 1])
-    center_x = (min_x + max_x) / 2.0
-    center_y = (min_y + max_y) / 2.0
-
-    loop_pos = ctx.get("loop_pos")
-    if isinstance(loop_pos, (list, tuple)) and len(loop_pos) >= 2:
-        attach_x = _coerce_finite_float(loop_pos[0], center_x)
-        attach_y = _coerce_finite_float(loop_pos[1], max_y)
-    else:
-        preset = str(ctx.get("loop_position_preset") or "top-center")
-        offset_x = _coerce_finite_float(ctx.get("loop_offset_x"), 0.0)
-        offset_y = _coerce_finite_float(ctx.get("loop_offset_y"), 0.0)
-        if (
-            preset == "top-center"
-            and scene is not None
-            and abs(_coerce_finite_float(ctx.get("loop_angle"), 0.0)) <= 1e-9
-        ):
-            requested_x = center_x + offset_x
-            loop_width = _coerce_positive_float(ctx.get("loop_width"), 4.0)
-            top_range = _scene_top_edge_range_for_contact_band(
-                scene, requested_x, loop_width
-            )
-            if top_range is not None:
-                hole_clearance = keychain_loop_hole_clearance(
-                    loop_width,
-                    _coerce_positive_float(ctx.get("loop_length"), 8.0),
-                    _coerce_positive_float(ctx.get("loop_hole"), 2.5),
-                )
-                anchor_y = resolve_keychain_contact_anchor_y(
-                    *top_range, hole_clearance
-                )
-                return requested_x, anchor_y + max(0.0, offset_y)
-        if preset == "top-left":
-            attach_x, attach_y = min_x, max_y
-        elif preset == "top-right":
-            attach_x, attach_y = max_x, max_y
-        elif preset == "left-center":
-            attach_x, attach_y = min_x, center_y
-        elif preset == "right-center":
-            attach_x, attach_y = max_x, center_y
-        elif preset == "bottom-center":
-            attach_x, attach_y = center_x, min_y
-        else:
-            attach_x, attach_y = center_x, max_y
-
-    attach_x += _coerce_finite_float(ctx.get("loop_offset_x"), 0.0)
-    attach_y += _coerce_finite_float(ctx.get("loop_offset_y"), 0.0)
-    return attach_x, attach_y
-
-
 def _geometry_xy_distance(bounds: np.ndarray, x: float, y: float) -> tuple[float, float]:
     min_x, min_y = float(bounds[0, 0]), float(bounds[0, 1])
     max_x, max_y = float(bounds[1, 0]), float(bounds[1, 1])
@@ -633,6 +539,9 @@ def _inject_vector_keychain_loop(
     scene: trimesh.Scene,
     preview_colors: dict,
     slot_names: list,
+    body: BaseGeometry,
+    *,
+    x_mirrored: bool = False,
 ) -> bool:
     """Add vector keychain-loop geometry to the export scene when requested."""
     if not bool(ctx.get("add_loop", False)):
@@ -642,32 +551,48 @@ def _inject_vector_keychain_loop(
     if bounds is None:
         return False
 
-    attach_x, attach_y = _vector_loop_attach_point(ctx, bounds, scene)
+    profile = LoopProfile(
+        _coerce_positive_float(ctx.get("loop_width"), 4.0),
+        _coerce_positive_float(ctx.get("loop_length"), 8.0),
+        _coerce_positive_float(ctx.get("loop_hole"), 2.5),
+        _coerce_finite_float(ctx.get("loop_angle"), 0.0),
+    )
+    pos = ctx.get("loop_pos")
+    anchor_x, anchor_y = solve_vector_loop(body, profile, str(ctx.get("loop_position_preset") or "top-center"))
+    if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+        anchor_x = _coerce_finite_float(pos[0], anchor_x)
+        anchor_y = _coerce_finite_float(pos[1], anchor_y)
+    attach_x = anchor_x + _coerce_finite_float(ctx.get("loop_offset_x"), 0.0)
+    attach_y = anchor_y + _coerce_finite_float(ctx.get("loop_offset_y"), 0.0)
     _color_idx, rgba, material_name = _resolve_vector_loop_style(
         ctx,
         scene,
-        attach_x,
+        -attach_x if x_mirrored else attach_x,
         attach_y,
         preview_colors,
         list(slot_names),
     )
 
     thickness_mm = max(
-        PrinterConfig.LAYER_HEIGHT,
+        resolve_layer_height_mm(ctx),
         float(bounds[1, 2] - bounds[0, 2]),
     )
     loop_mesh = create_keychain_loop(
-        width_mm=_coerce_positive_float(ctx.get("loop_width"), 4.0),
-        length_mm=_coerce_positive_float(ctx.get("loop_length"), 8.0),
-        hole_dia_mm=_coerce_positive_float(ctx.get("loop_hole"), 2.5),
+        width_mm=profile.width,
+        length_mm=profile.length,
+        hole_dia_mm=profile.hole,
         thickness_mm=thickness_mm,
         attach_x_mm=attach_x,
         attach_y_mm=attach_y,
-        angle_deg=_coerce_finite_float(ctx.get("loop_angle"), 0.0),
+        angle_deg=profile.angle,
     )
     if loop_mesh is None or len(loop_mesh.vertices) == 0 or len(loop_mesh.faces) == 0:
         return False
 
+    # The body is already in print space. Mirror the loop built in artwork
+    # space with the same transform, including its rotated profile.
+    if x_mirrored:
+        loop_mesh.apply_transform(np.diag([-1.0, 1.0, 1.0, 1.0]))
     z_offset = float(bounds[0, 2])
     if z_offset != 0.0:
         loop_mesh.vertices[:, 2] += z_offset
@@ -864,13 +789,8 @@ def _apply_vector_outline_export_transform(
 
     Body meshes are normalised in ``VectorProcessor.build_mesh`` after
     extrusion: SVG's Y-down coordinates are flipped into printer Y-up space,
-    and non-5-colour single-sided exports are mirrored on X. The Outline mesh
-    is generated outside ``build_mesh``, so it must repeat those two transforms
-    explicitly.
-
-    主体网格在 ``VectorProcessor.build_mesh`` 里完成坐标归一：先把 SVG 的
-    Y-down 坐标翻到打印坐标，再对非 5 色单面导出做 X 镜像。Outline 是在
-    ``build_mesh`` 外部生成的，因此这里显式复用同一组变换。
+    and face-down artwork is mirrored on X. Relief remains face-up. Outline
+    uses the body's orientation rule because it is built outside ``build_mesh``.
     """
     if _resolve_vector_outline_export_size_mm(analysis, scale_factor) is None:
         return
@@ -889,9 +809,11 @@ def _apply_vector_outline_export_transform(
         else ctx.get("color_mode", "")
     )
     color_mode_text = str(color_mode_source or "")
-    is_single_sided = "单面" in structure_mode_text or "Single" in structure_mode_text
-    is_5color = "5-Color Extended" in color_mode_text
-    if is_single_sided and not is_5color:
+    if should_mirror_vector_export(
+        structure_mode_text,
+        color_mode_text,
+        enable_relief=bool(ctx.get("enable_relief", False)),
+    ):
         mirror_x = np.eye(4)
         mirror_x[0, 0] = -1.0
         outline_mesh.apply_transform(mirror_x)
@@ -1024,38 +946,23 @@ def _update_bambu_base_layer_ctx_for_vector(
             preserves the historical printer default.\uff08\u5b9e\u9645\u77e2\u91cf\u5c42\u9ad8\uff1b``None``
             \u65f6\u6cbf\u7528\u5386\u53f2\u6253\u5370\u673a\u9ed8\u8ba4\u503c\u3002\uff09
     """
-    from config import PrinterConfig
-
-    try:
-        layer_h = float(
-            PrinterConfig.LAYER_HEIGHT
-            if layer_height_mm is None
-            else layer_height_mm
-        )
-    except (TypeError, ValueError):
-        layer_h = float(PrinterConfig.LAYER_HEIGHT)
-    if not np.isfinite(layer_h) or layer_h <= 0:
-        layer_h = float(PrinterConfig.LAYER_HEIGHT)
+    layer_h = resolve_layer_height_mm(ctx if layer_height_mm is None else {"layer_height_mm": layer_height_mm})
     backing_layer_count = max(1, int(round(float(thickness_mm) / layer_h)))
     base_height_mm = backing_layer_count * layer_h
-    coating_layers = 0
-    if bool(ctx.get("enable_coating", False)):
-        try:
-            coating_height_mm = float(ctx.get("coating_height_mm", layer_h))
-        except (TypeError, ValueError):
-            coating_height_mm = layer_h
-        if np.isfinite(coating_height_mm) and coating_height_mm > 0:
-            coating_layers = max(1, int(round(coating_height_mm / layer_h)))
-    color_height_mm = (max(0, int(num_layers)) + coating_layers) * layer_h
+    color_height_mm = max(0, int(num_layers)) * layer_h
+    if ctx.get("enable_coating"):
+        color_height_mm += resolve_coating_height_mm(ctx.get("coating_height_mm"))
 
     structure_mode_text = str(structure_mode or "")
     color_mode_text = str(color_mode or "")
     is_double = "\u53cc\u9762" in structure_mode_text or "Double" in structure_mode_text
     is_5color = "5-Color Extended" in color_mode_text
 
-    if is_double:
+    if is_5color:
+        face_orientation = "up"
+    elif is_double:
         face_orientation = "double"
-    elif is_5color or bool(ctx.get("enable_relief", False)):
+    elif ctx.get("enable_relief"):
         face_orientation = "up"
     else:
         face_orientation = "down"
@@ -1226,19 +1133,8 @@ def _log_vector_color_drift_diagnostics(analysis, raster_cache) -> None:
 
 
 def _resolve_vector_layer_height_mm(ctx: dict) -> float:
-    """Return the validated effective layer height for native vector flows.
-
-    普通矢量生成、预览与大画幅切片必须共享同一有效层高；缺失或非法值
-    回退到打印机配置默认值，保持历史 0.08 mm 行为。
-    """
-    fallback = float(PrinterConfig.LAYER_HEIGHT)
-    try:
-        layer_height_mm = float(ctx.get("layer_height_mm") or fallback)
-    except (TypeError, ValueError):
-        return fallback
-    if not math.isfinite(layer_height_mm) or layer_height_mm <= 0:
-        return fallback
-    return layer_height_mm
+    """Return the effective layer height for native vector flows."""
+    return resolve_layer_height_mm(ctx)
 
 
 def _build_vector_processor(ctx: dict, *, fallback_color_mode: str):
@@ -1539,6 +1435,8 @@ def _run_vector_preview_branch(ctx: dict) -> dict:
         preview_timing["analyze_svg_s"] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
+        structure = resolve_structure_plan(analysis)
+        analysis.structure_plan = structure
         raster_cache = VectorProcessor.build_preview_cache(
             analysis,
             pixels_per_mm=10.0,
@@ -1646,6 +1544,10 @@ def _run_vector_preview_branch(ctx: dict) -> dict:
             "debug_data": None,
             "quantized_image": raster_cache["quantized_image"],
         }
+        # Reuse the same prepared print outline as the backing mask. Keep it
+        # in the session's NumPy artifacts so posing a ring needs no SVG parse.
+        cache["keychain_vector_body"] = np.frombuffer(shapely.to_wkb(structure.body), dtype=np.uint8)
+        cache["keychain_vector_mm_per_unit"] = structure.mm_per_unit
         if dynamic_layer_active:
             cache["material_dynamic_layer_info"] = deepcopy(dynamic_layer_info)
             cache["original_material_dynamic_layer_info"] = deepcopy(
@@ -1721,6 +1623,8 @@ def _run_vector_preview_branch(ctx: dict) -> dict:
         return ctx
     except MemoryError:
         raise
+    except (DynamicMaterialCandidateError, DynamicMaterialSolverError) as exc:
+        return _record_dynamic_material_error(ctx, exc)
     except Exception as exc:
         ctx["error"] = f"[VECTOR_PREVIEW] {exc}"
         log.exception("Vector preview branch failed: %s", exc)
@@ -1828,6 +1732,9 @@ def _run_vector_branch(ctx: dict) -> dict:
     vector_replacements = replacement_regions
     if not vector_replacements:
         vector_replacements = color_replacements
+    coating_height_mm = (
+        resolve_coating_height_mm(ctx.get("coating_height_mm")) if ctx.get("enable_coating") else 0.0
+    )
 
     try:
         from core.vector_engine import (
@@ -1842,8 +1749,8 @@ def _run_vector_branch(ctx: dict) -> dict:
         )
         vec_processor.enable_fridge_magnet = bool(enable_fridge_magnet)
         vec_processor.fridge_magnets = list(fridge_magnets)
-        vec_processor.enable_coating = bool(ctx.get("enable_coating", False))
-        vec_processor.coating_height_mm = float(ctx.get("coating_height_mm", 0.08))
+        vec_processor.enable_coating = coating_height_mm > 0
+        vec_processor.coating_height_mm = coating_height_mm
         vec_processor.coating_material = ctx.get("resolved_coating_material")
         vec_processor.enable_outline = bool(ctx.get("enable_outline", False))
         try:
@@ -2163,6 +2070,11 @@ def _run_vector_branch(ctx: dict) -> dict:
                 time.perf_counter() - recipe_override_t0
             )
 
+        # Free-color ownership must be assigned before material extrusion;
+        # adding a second mesh afterwards would duplicate the optical volume.
+        analysis = _prepare_vector_free_colors(analysis, ctx.get("free_color_set"))
+        if ctx.get("add_loop"):
+            analysis.structure_plan = resolve_structure_plan(analysis)
         # 1b. Build 3D mesh from analysis
         build_mesh_kwargs = {
             "analysis": analysis,
@@ -2376,12 +2288,13 @@ def _run_vector_branch(ctx: dict) -> dict:
                 },
             )
 
-        _inject_vector_keychain_loop(
-            ctx,
-            scene,
-            vec_preview_colors,
-            list(vec_slot_list),
-        )
+        if ctx.get("add_loop"):
+            _inject_vector_keychain_loop(
+                ctx, scene, vec_preview_colors, list(vec_slot_list), vector_keychain_body(analysis),
+                x_mirrored=should_mirror_vector_export(
+                    structure_mode, vec_color_mode, enable_relief=bool(ctx.get("enable_relief", False)),
+                ),
+            )
 
         # 1.6 Inject vector Outline mesh.
         # Use the shared structure plan, never the post-match color partition.
@@ -2568,6 +2481,8 @@ def _run_vector_branch(ctx: dict) -> dict:
                     },
                 )
 
+        if ctx.get("add_loop"):
+            validate_keychain_export(scene, separate_backing=ctx.get("backing_output") == "separate_project")
         export_t0 = time.perf_counter()
         # Cover thumbnail source resolution priority:
         # 1. ``ctx['svg_raster_preview_bytes']`` (rasterized SVG preview bytes
@@ -2614,6 +2529,7 @@ def _run_vector_branch(ctx: dict) -> dict:
                 ctx.get("backing_infill_density_percent", 100)
             ),
             cover_source=vector_cover_source,
+            coating_height_mm=coating_height_mm,
             device_profile_id=ctx.get("device_profile_id") or None,
             custom_3mf_template_id=ctx.get("custom_3mf_template_id") or None,
             build_plate_id=ctx.get("build_plate_id") or None,

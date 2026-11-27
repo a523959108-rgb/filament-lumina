@@ -51,6 +51,8 @@ _CUBOID_FACE_TEMPLATE = np.asarray(
     dtype=np.uint32,
 )
 _COMPONENT_SIGNATURE_MAX_WORKING_BYTES = 8 * 1024 * 1024
+_COMPONENT_COUNT_BLOCK_VOXELS = 1_048_576
+_CONTACT_COUNT_BLOCK_VOXELS = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -938,7 +940,7 @@ def _segment_pairs_have_material(
         token_coordinates[second_tokens],
     )
     sample = np.floor_divide(
-        low + high - first_normals - second_normals,
+        low + (high - first_normals) - second_normals,
         4,
     )
     x, y, z = sample.T
@@ -1199,7 +1201,14 @@ def _mesh_arrays_from_patches(
     if token_count > np.iinfo(np.uint32).max:
         raise ValueError("Layered surface component exceeds uint32 lattice indices")
 
-    token_coordinates = np.empty((token_count, 3), dtype=np.int64)
+    # Coordinates are doubled exact integers. Most raster grids fit int32;
+    # retain int64 for the larger domain, including the final Y-axis flip.
+    coordinate_dtype = (
+        np.int32
+        if 2 * max(int(patches.corners.max()), int(height_px)) <= np.iinfo(np.int32).max
+        else np.int64
+    )
+    token_coordinates = np.empty((token_count, 3), dtype=coordinate_dtype)
     faces_by_token = np.empty((face_count, 3), dtype=np.uint32)
     segment_start = np.empty(boundary_token_count, dtype=np.uint32)
     segment_end = np.empty(boundary_token_count, dtype=np.uint32)
@@ -1212,7 +1221,7 @@ def _mesh_arrays_from_patches(
     np.cumsum(ring_lengths - 2, out=patch_face_offsets[1:])
 
     if not bool(np.any(base_nonmanifold)):
-        token_coordinates[:] = base_start.astype(np.int64) * 2
+        np.multiply(base_start, 2, out=token_coordinates, dtype=coordinate_dtype)
         segment_start[:] = np.arange(boundary_token_count, dtype=np.uint32)
         segment_end[:] = segment_start + np.uint32(1)
         segment_end[patch_token_offsets[1:] - 1] = patch_token_offsets[
@@ -1257,13 +1266,19 @@ def _mesh_arrays_from_patches(
             ring_begin = token_cursor
             ring_position = 0
             for base_index in range(base_begin, base_finish):
-                token_coordinates[ring_begin + ring_position] = (
-                    base_start[base_index] * 2
+                np.multiply(
+                    base_start[base_index],
+                    2,
+                    out=token_coordinates[ring_begin + ring_position],
+                    dtype=coordinate_dtype,
                 )
                 ring_position += 1
                 if base_nonmanifold[base_index]:
-                    token_coordinates[ring_begin + ring_position] = (
-                        base_start[base_index] + base_end[base_index]
+                    np.add(
+                        base_start[base_index],
+                        base_end[base_index],
+                        out=token_coordinates[ring_begin + ring_position],
+                        dtype=coordinate_dtype,
                     )
                     ring_position += 1
             if ring_position != ring_length:
@@ -1679,6 +1694,47 @@ def _shifted_slices(
     return tuple(source), tuple(target)
 
 
+def _count_shifted_source_contacts(
+    selected: np.ndarray,
+    component_labels: np.ndarray,
+    offset: tuple[int, int, int],
+    layer_weights: np.ndarray | None = None,
+) -> int:
+    # Align neighbors before blocking so pairs crossing any block boundary
+    # are still counted exactly once.
+    source, target = _shifted_slices(selected.shape, offset)
+    selected_source, selected_target = selected[source], selected[target]
+    labels_source, labels_target = component_labels[source], component_labels[target]
+    planes, height, width = selected_source.shape
+    columns_per_block = min(width, _CONTACT_COUNT_BLOCK_VOXELS)
+    rows_per_block = min(height, _CONTACT_COUNT_BLOCK_VOXELS // columns_per_block)
+    planes_per_block = min(
+        planes, _CONTACT_COUNT_BLOCK_VOXELS // (columns_per_block * rows_per_block),
+    )
+    workspace = np.empty(planes_per_block * rows_per_block * columns_per_block, dtype=bool)
+
+    pairs = 0
+    for z in range(0, planes, planes_per_block):
+        z_slice = slice(z, z + planes_per_block)
+        weights = None if layer_weights is None else layer_weights[z_slice]
+        if weights is not None and not np.any(weights):
+            continue
+        for y in range(0, height, rows_per_block):
+            for x in range(0, width, columns_per_block):
+                block = (z_slice, slice(y, y + rows_per_block), slice(x, x + columns_per_block))
+                source_block = selected_source[block]
+                touching = workspace[:source_block.size].reshape(source_block.shape)
+                np.not_equal(labels_source[block], labels_target[block], out=touching)
+                touching &= source_block
+                touching &= selected_target[block]
+                if weights is None:
+                    pairs += int(np.count_nonzero(touching))
+                else:
+                    counts = np.count_nonzero(touching, axis=(1, 2))
+                    pairs += sum(int(count) * int(weight) for count, weight in zip(counts, weights))
+    return pairs
+
+
 def _count_source_contacts(
     selected: np.ndarray,
     component_labels: np.ndarray,
@@ -1699,14 +1755,9 @@ def _count_source_contacts(
                     continue
                 if any(abs(delta) >= length for delta, length in zip(offset, selected.shape)):
                     continue
-                source, target = _shifted_slices(selected.shape, offset)
-                touching = selected[source] & selected[target]
-                touching &= component_labels[source] != component_labels[target]
-                if layer_widths is not None and dz == 0:
-                    counts = np.count_nonzero(touching, axis=(1, 2))
-                    pair_count = sum(int(count) * int(width) for count, width in zip(counts, layer_widths))
-                else:
-                    pair_count = int(np.count_nonzero(touching))
+                pair_count = _count_shifted_source_contacts(
+                    selected, component_labels, offset, layer_widths if dz == 0 else None,
+                )
                 if nonzero_axes == 2:
                     edge_pairs += pair_count
                 else:
@@ -1714,6 +1765,7 @@ def _count_source_contacts(
     if layer_widths is not None:
         # Consecutive physical layers inside a repeated plane are absent from
         # the compact array. Their diagonal contacts still belong to the source.
+        internal_layer_weights = layer_widths - 1
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 nonzero_axes = 1 + int(dy != 0) + int(dx != 0)
@@ -1721,11 +1773,9 @@ def _count_source_contacts(
                     continue
                 if abs(dy) >= selected.shape[1] or abs(dx) >= selected.shape[2]:
                     continue
-                source, target = _shifted_slices(selected.shape, (0, dy, dx))
-                touching = selected[source] & selected[target]
-                touching &= component_labels[source] != component_labels[target]
-                counts = np.count_nonzero(touching, axis=(1, 2))
-                pairs = sum(int(count) * (int(width) - 1) for count, width in zip(counts, layer_widths))
+                pairs = _count_shifted_source_contacts(
+                    selected, component_labels, (0, dy, dx), internal_layer_weights,
+                )
                 if nonzero_axes == 2:
                     edge_pairs += pairs
                 else:
@@ -1808,6 +1858,7 @@ def build_labeled_surface_mesh(
         component_labels,
         layer_widths,
     )
+    del selected
     effective_policy = policy or LayeredMeshPolicy()
     lattice_audit = _LatticeFloat32Audit()
     vertex_chunks: list[np.ndarray] = []
@@ -1823,10 +1874,23 @@ def build_labeled_surface_mesh(
     export_part_ranges: list[MeshExportPartRange] = []
     component_bounds = ndimage.find_objects(component_labels)
     component_origins, component_ends = _component_bound_arrays(component_bounds)
-    component_sizes = np.bincount(
-        component_labels.reshape(-1),
-        minlength=int(component_count) + 1,
-    )[1:].astype(np.int64, copy=False)
+    component_sizes = np.zeros(int(component_count) + 1, dtype=np.int64)
+    flat_component_labels = component_labels.reshape(-1)
+    # bincount promotes its input to native intp. Bound that hidden copy rather
+    # than duplicating the complete int32 component volume for every material.
+    for start in range(0, flat_component_labels.size, _COMPONENT_COUNT_BLOCK_VOXELS):
+        label_block = flat_component_labels[start : start + _COMPONENT_COUNT_BLOCK_VOXELS]
+        if len(component_sizes) <= _COMPONENT_COUNT_BLOCK_VOXELS:
+            component_sizes += np.bincount(label_block, minlength=len(component_sizes))
+        else:
+            # A sparse component field can have more shells than block voxels.
+            # Avoid re-allocating a global-sized histogram for every block.
+            block_labels, block_counts = np.unique(label_block, return_counts=True)
+            component_sizes[block_labels] += block_counts
+            del block_labels, block_counts
+    del label_block
+    component_sizes = component_sizes[1:]
+    del flat_component_labels
     component_dimensions = component_ends.astype(np.int64) - component_origins
     component_bbox_volumes = np.prod(component_dimensions, axis=1)
     cuboid_components = component_sizes == component_bbox_volumes
@@ -2094,7 +2158,6 @@ def build_labeled_surface_mesh(
         exact_groups,
         template_groups,
         individual_component_indices,
-        selected,
     )
 
     if len(vertex_chunks) == 1:

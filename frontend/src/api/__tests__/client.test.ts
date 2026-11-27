@@ -1,3 +1,6 @@
+import { closeSession } from "../session";
+import { getGlbStatus } from "../converter";
+import { useErrorTicketPromptStore } from "../../stores/errorTicketPromptStore";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../utils/clientLog", () => ({
@@ -23,6 +26,36 @@ const jsonHeaders = {
 };
 
 describe("apiClient", () => {
+  it("keeps best-effort old-session cleanup failures out of the foreground ticket prompt", async () => {
+    useErrorTicketPromptStore.getState()._resetForTests();
+    const adapter = vi.fn(async (config) => {
+      throw Object.assign(new Error("Gateway unavailable"), {
+        isAxiosError: true, code: "ERR_BAD_RESPONSE", config,
+        response: { status: 502, data: "", headers: {} },
+      });
+    });
+    apiClient.defaults.adapter = adapter;
+    await closeSession("expired-before-preview", ["completed-download"]);
+    expect(JSON.parse(adapter.mock.calls[0][0].data)).toEqual({
+      session_id: "expired-before-preview", keep_file_ids: ["completed-download"],
+    });
+    expect(useErrorTicketPromptStore.getState().pending).toBeNull();
+    expect(postClientLog).toHaveBeenCalledWith("api: request failed", expect.anything());
+  });
+
+  it("logs recoverable GLB polling failures without interrupting the user with a ticket prompt", async () => {
+    useErrorTicketPromptStore.getState()._resetForTests();
+    apiClient.defaults.adapter = async (config) => {
+      throw Object.assign(new Error("Backend unavailable"), {
+        isAxiosError: true, code: "ERR_BAD_RESPONSE", config,
+        response: { status: 502, data: "Backend unavailable", headers: {} },
+      });
+    };
+    await expect(getGlbStatus("poll-session")).rejects.toMatchObject({ response: { status: 502 } });
+    expect(useErrorTicketPromptStore.getState().pending).toBeNull();
+    expect(postClientLog).toHaveBeenCalledWith("api: request failed", expect.anything());
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     useActionHistoryStore.getState()._resetForTests();
@@ -294,6 +327,84 @@ describe("apiClient", () => {
   );
 
   it.each([
+    {
+      language: "en" as const,
+      expected:
+        "This model needs 6 material slots, but the selected 3MF template has 4. Choose a template with at least 6 slots or use fewer materials.",
+    },
+    {
+      language: "zh" as const,
+      expected:
+        "当前模型需要 6 个耗材槽，但所选 3MF 模板只有 4 个。请换用至少 6 槽的模板，或减少模型使用的耗材。",
+    },
+  ])(
+    "translates template capacity with the required and available slots in $language",
+    async ({ language, expected }) => {
+      useSettingsStore.setState({ language });
+      const detail = {
+        code: "template_slot_capacity",
+        required_slots: 6,
+        available_slots: 4,
+        message: "Server fallback for older clients.",
+      };
+      const error = Object.assign(new Error("Request failed with status code 422"), {
+        config: { method: "post", url: "/convert/export-materials" },
+        response: { status: 422, data: { detail } },
+      });
+      apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce(error);
+
+      const rejected = await apiClient.post("/convert/export-materials", {}).catch((err) => err);
+
+      expect(rejected.message).toBe(expected);
+      expect(rejected.response.data.detail).toEqual(detail);
+    },
+  );
+
+  it.each([
+    {
+      language: "zh" as const,
+      expected: "所选 3MF 模板的喷头分配不完整。请在 Bambu Studio 中为每种耗材指定喷头，或选择自动耗材分组，然后保存并重新导入模板。",
+    },
+    {
+      language: "en" as const,
+      expected: "The selected 3MF template has incomplete nozzle assignments. In Bambu Studio, assign every material to a nozzle or choose automatic material grouping, then save and import the template again.",
+    },
+  ])("explains incomplete template nozzle assignments in $language", async ({ language, expected }) => {
+    useSettingsStore.setState({ language });
+    const detail = {
+      code: "template_material_mapping", field: "filament_nozzle_map",
+      material_count: 8, value_count: 7, mapping_mode: "Manual",
+      message: "Server fallback for older clients.",
+    };
+    const error = Object.assign(new Error("Request failed with status code 422"), {
+      config: { method: "post", url: "/convert/generate" },
+      response: { status: 422, data: { detail } },
+    });
+    apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce(error);
+
+    const rejected = await apiClient.post("/convert/generate", {}).catch((err) => err);
+
+    expect(rejected.message).toBe(expected);
+    expect(rejected.response.data.detail).toEqual(detail);
+  });
+
+  it("keeps the server capacity message when slot counts are unavailable", async () => {
+    const fallback = "Choose a template with enough material slots.";
+    const error = Object.assign(new Error("Request failed with status code 422"), {
+      config: { method: "post", url: "/convert/export-materials" },
+      response: {
+        status: 422,
+        data: { detail: { code: "template_slot_capacity", message: fallback } },
+      },
+    });
+    apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce(error);
+
+    await expect(apiClient.post("/convert/export-materials", {})).rejects.toMatchObject({
+      message: fallback,
+    });
+  });
+
+  it.each([
     "future_validation_code",
     "constructor",
     "toString",
@@ -468,6 +579,11 @@ describe("apiClient", () => {
     expect(
       apiErrorToVisibleMessage(new Error("Vectorizer dependency missing")),
     ).toBe("Vectorizer dependency missing");
+  });
+
+  it("explains how to retry blocked account and source requests on the local Studio page", () => {
+    const error = {response: {status: 403, data: {detail: "Open the contribution dialog in Lumina Studio."}}};
+    expect(apiErrorToVisibleMessage(error)).toMatch(/localhost.*127\.0\.0\.1/);
   });
 
   it("normalizes bare network and timeout errors for visible UI callers", () => {

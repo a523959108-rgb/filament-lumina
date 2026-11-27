@@ -63,6 +63,7 @@ def _make_parse_only_processor(sampling_precision=0.05):
     vp.parse_warnings = []
     vp.enable_fridge_magnet = False
     vp.fridge_magnets = []
+    vp.coating_material = None
     return vp
 
 
@@ -1086,11 +1087,60 @@ class TestVectorPreviewBackingMaskRegression:
 
 class TestVectorCoatingBuildMeshRegression:
 
+    @pytest.mark.parametrize("enable_relief", [False, True])
+    @pytest.mark.parametrize("with_outline", [False, True])
+    def test_face_up_coating_follows_the_optical_surface(self, with_outline: bool, enable_relief: bool) -> None:
+        processor = _make_parse_only_processor()
+        processor.color_mode = "4-Color" if enable_relief else "5-Color Extended"
+        processor.enable_coating = True
+        processor.coating_height_mm = PrinterConfig.LAYER_HEIGHT
+        processor.enable_outline = with_outline
+        processor.outline_width_mm = 1.0
+        full = box(0, 0, 5, 10)
+        padded = box(5, 0, 10, 10)
+        shapes = [
+            {"geometry": full, "recipe": [1, 0], "color": (0, 255, 255)},
+            {"geometry": padded, "recipe": [-1, 0], "color": (255, 255, 255)},
+        ]
+        analysis = VectorAnalysis(
+            shape_data=[],
+            clipped_shapes=shapes,
+            matched_shapes=shapes,
+            silhouette=box(0, 0, 10, 10),
+            scale_factor=1.0,
+            bbox=(0.0, 0.0, 10.0, 10.0),
+            color_conf={},
+            slot_names=["White", "Cyan"],
+            num_channels=2,
+            num_layers=2,
+            preview_colors={0: [255, 255, 255, 255], 1: [0, 255, 255, 255]},
+            stage_timings={},
+        )
+
+        scene = processor.build_mesh(
+            analysis, thickness_mm=1.6, enable_relief=enable_relief,
+            color_height_map={"#00ffff": 1.76, "#ffffff": 0.8},
+        )
+        coating = scene.geometry["Coating"]
+
+        def cap_heights(point: Point) -> list[float]:
+            return sorted({
+                round(float(triangle[0, 2]), 7)
+                for triangle in coating.triangles
+                if np.ptp(triangle[:, 2]) < 1e-9 and Polygon(triangle[:, :2]).covers(point)
+            })
+
+        assert cap_heights(Point(2.5, -5.0)) == pytest.approx([1.76, 1.84])
+        expected_shallow = [0.72, 0.8] if enable_relief else [1.68, 1.76]
+        assert cap_heights(Point(7.5, -5.0)) == pytest.approx(expected_shallow)
+        if with_outline:
+            assert cap_heights(Point(10.5, -5.0)) == pytest.approx([1.76, 1.84])
+
     def test_build_mesh_adds_coating_when_enabled(self):
         processor = _make_parse_only_processor()
         processor.color_mode = "4-Color"
         processor.enable_coating = True
-        processor.coating_height_mm = PrinterConfig.LAYER_HEIGHT * 2
+        processor.coating_height_mm = 0.12
         analysis = VectorAnalysis(
             shape_data=[],
             clipped_shapes=[{"geometry": box(0, 0, 20, 20), "color": (255, 0, 0), "draw_order": 0}],
@@ -1110,7 +1160,8 @@ class TestVectorCoatingBuildMeshRegression:
         coating = scene.geometry["Coating"]
 
         assert "Coating" in scene.geometry
-        assert coating.bounds[0][2] == pytest.approx(-PrinterConfig.LAYER_HEIGHT * 2)
+        assert coating.extents[2] == pytest.approx(0.12)
+        assert coating.bounds[0][2] == pytest.approx(-0.12)
         assert coating.bounds[1][2] == pytest.approx(0.0)
         assert analysis.preview_colors["Coating"] == [200, 200, 200, 80]
 
@@ -1119,7 +1170,7 @@ class TestVectorCoatingBuildMeshRegression:
         processor.color_mode = "4-Color"
         processor.layer_height_mm = 0.10
         processor.enable_coating = True
-        processor.coating_height_mm = processor.layer_height_mm * 2
+        processor.coating_height_mm = 0.12
         analysis = VectorAnalysis(
             shape_data=[],
             clipped_shapes=[
@@ -1157,14 +1208,16 @@ class TestVectorCoatingBuildMeshRegression:
             structure_mode="Double-sided",
         )
         coating = scene.geometry["Coating"]
-        coating_height = processor.layer_height_mm * 2
+        coating_height = 0.12
         expected_top = (
             thickness_mm
             + analysis.num_layers * processor.layer_height_mm * 2
             + coating_height
         )
 
-        assert len(coating.split(only_watertight=False)) == 2
+        faces = coating.split(only_watertight=False)
+        assert len(faces) == 2
+        assert [face.extents[2] for face in faces] == pytest.approx([0.12, 0.12])
         assert coating.bounds[0][2] == pytest.approx(-coating_height)
         assert coating.bounds[1][2] == pytest.approx(expected_top)
 
@@ -1245,6 +1298,85 @@ class TestVectorCoatingBuildMeshRegression:
 
 
 class TestVectorSingleSidedMirrorRegression:
+
+    @pytest.mark.parametrize(
+        ("color_mode", "structure_mode", "height_mode", "mirror_x"),
+        [
+            ("Material Archive", "Single-sided", "color", False),
+            ("Material Archive", "Single-sided", "heightmap", False),
+            ("4-Color", "单面", "color", False),
+            ("Material Archive", "Single-sided", None, True),
+            ("5-Color Extended", "Single-sided", None, False),
+            ("4-Color", "Double-sided", None, False),
+        ],
+    )
+    def test_outline_surrounds_body_in_the_same_export_coordinates(
+        self, tmp_path, color_mode, structure_mode, height_mode, mirror_x
+    ):
+        from PIL import Image
+        from shapely import affinity
+        from shapely.ops import unary_union
+        from core.pipeline.vector_branch import _generate_vector_outline_mesh
+
+        processor = _make_parse_only_processor()
+        processor.color_mode = color_mode
+        # Offset and asymmetry expose both accidental translation and mirroring.
+        shape = Polygon([(2, 3), (18, 3), (18, 9), (8, 9), (8, 17), (2, 17)])
+        layers = 6 if color_mode == "5-Color Extended" else 5
+        records = [{"geometry": shape, "recipe": [1] * layers, "color": (0, 255, 255)}]
+        analysis = VectorAnalysis(
+            shape_data=records,
+            clipped_shapes=records,
+            matched_shapes=records,
+            silhouette=shape,
+            scale_factor=1.0,
+            bbox=(0.0, 0.0, 20.0, 20.0),
+            color_conf={},
+            slot_names=["White", "Cyan"],
+            num_channels=2,
+            num_layers=layers,
+            preview_colors={0: [255, 255, 255, 255], 1: [0, 255, 255, 255]},
+            stage_timings={},
+        )
+        relief_options = {}
+        if height_mode is not None:
+            relief_options = {"enable_relief": True, "height_mode": height_mode}
+        if height_mode == "heightmap":
+            heightmap = tmp_path / "heightmap.png"
+            Image.fromarray(np.arange(64, dtype=np.uint8).reshape(8, 8) * 4).save(heightmap)
+            relief_options.update(heightmap_path=str(heightmap), heightmap_max_height=3.0)
+        scene = processor.build_mesh(
+            analysis=analysis,
+            thickness_mm=1.2,
+            structure_mode=structure_mode,
+            **relief_options,
+        )
+        outline = _generate_vector_outline_mesh(
+            analysis, 1.0, [255, 255, 255, 255], "White",
+            {
+                "structure_mode": structure_mode,
+                "spacer_thick": 1.2,
+                "color_mode": "5-Color Extended",
+                **relief_options,
+            },
+            export_color_mode=color_mode,
+        )
+        assert outline is not None
+
+        def footprint(mesh):
+            triangles = np.asarray(mesh.triangles)[:, :, :2]
+            polygons = [Polygon(triangle) for triangle in triangles]
+            return unary_union([polygon for polygon in polygons if polygon.area > 1e-10])
+
+        expected = affinity.scale(shape, xfact=-1 if mirror_x else 1, yfact=-1, origin=(0, 0))
+        body = footprint(scene.geometry["Cyan"])
+        assert body.symmetric_difference(expected).area < 1e-6
+        assert expected.difference(footprint(scene.geometry["Board"])).area < 1e-6
+        ring = footprint(outline)
+        ring_parts = tuple(ring.geoms) if ring.geom_type == "MultiPolygon" else (ring,)
+        envelope = unary_union([Polygon(part.exterior) for part in ring_parts])
+        assert body.difference(envelope).area < 1e-6
+        assert np.max(scene.bounds[:, 0]) - np.min(scene.bounds[:, 0]) < 20
 
     def test_build_mesh_mirrors_non_5color_without_vertex_translation(self):
         processor = _make_parse_only_processor()

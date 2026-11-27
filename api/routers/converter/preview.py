@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from api.dependencies import get_file_registry, get_session_store, get_worker_pool
 from api.dynamic_material_response import dynamic_material_result_from_cache
 from api.editor_project import EDITOR_PROJECT_MAX_BYTES, editor_project_preview_params
+from api.errors import to_http_exception
 from api.file_bridge import ensure_png_tempfile, ndarray_to_png_bytes
 from api.file_registry import FileRegistry
 from api.project_resources import stage_project_resources, discard_project_resources
@@ -30,6 +31,7 @@ from api.preview_response_payload import build_preview_response_palette
 from api.preview_cache_artifacts import (
     estimate_preview_cache_bytes,
     externalize_preview_cache,
+    get_preview_cache_field_path,
     get_preview_cache_max_bytes,
     get_preview_cache_metadata,
     hydrate_preview_cache,
@@ -45,6 +47,8 @@ from api.schemas.converter import (
     BedSizeItem,
     BedSizeListResponse,
     ColorReplacementItem,
+    KeychainAnchorRequest,
+    KeychainAnchorResponse,
     VectorPreviewRendererRequest,
     VectorPreviewRendererResponse,
 )
@@ -59,7 +63,8 @@ from api.session_store import SessionStore
 from api.structured_logging import bind_session_id, get_logger
 from api.visible_region_cache import schedule_visible_region_cache_prewarm
 from api.worker_pool import WorkerPoolManager
-from api.workers.converter_workers import worker_generate_preview
+from api.workers.converter_workers import worker_generate_preview, worker_prepare_material_catalog
+from api.workers.keychain import worker_keychain_anchor
 from config import (
     SVG_PIXELS_PER_MM_DEFAULT,
     SVG_PIXELS_PER_MM_MAX,
@@ -71,12 +76,16 @@ from config import (
     normalize_svg_pixels_per_mm,
 )
 from core.converter import generate_empty_bed_glb, generate_segmented_glb
+from core.errors import CoreError, KeychainPlacementError, MaterialArchiveUnavailableError
+from core.keychain_attachment import LoopProfile
 from core.naming import generate_segmented_glb_filename
 from core.heightmap_loader import HeightmapLoader
 from core.image_preprocessor import ImagePreprocessor
 from core.material_dynamic_solver import (
     DynamicMaterialCandidateError,
     DynamicMaterialSolverError,
+    MAX_DYNAMIC_LAYER_COUNT,
+    MIN_DYNAMIC_LAYER_COUNT,
 )
 from core.vector_large_format import inspect_svg_large_format_support, normalize_large_format_source_basename
 from utils.lut_manager import LUTManager
@@ -666,6 +675,44 @@ def _parse_selected_materials(value: list[str] | str | None) -> list[str]:
     return [s.strip() for s in normalized if s.strip()]
 
 
+@router.post("/prepare-material-catalog")
+async def prepare_material_catalog(
+    selected_materials: Annotated[list[str], Form()],
+    material_min_layer_count: Annotated[int, Form(ge=MIN_DYNAMIC_LAYER_COUNT, le=MAX_DYNAMIC_LAYER_COUNT)],
+    material_max_layer_count: Annotated[int, Form(ge=MIN_DYNAMIC_LAYER_COUNT, le=MAX_DYNAMIC_LAYER_COUNT)],
+    material_layer_height_mm: Annotated[float, Form(gt=0, allow_inf_nan=False)],
+    material_backing_material_index: Annotated[int | None, Form()] = None,
+    project_materials: Annotated[UploadFile | None, File()] = None,
+    pool: WorkerPoolManager = Depends(get_worker_pool),
+) -> dict[str, bool]:
+    """Prepare the same image-independent candidate catalog that preview consumes."""
+    names = _parse_selected_materials(selected_materials)
+    if not names or material_min_layer_count > material_max_layer_count:
+        raise HTTPException(422, "Select materials and an ordered dynamic layer range.")
+    _validate_unique_dynamic_material_selection(names)
+    backing = _resolve_material_backing_index(names, material_backing_material_index)
+    resources = await stage_project_resources(None, project_materials, names)
+    job = asyncio.create_task(pool.submit(
+        worker_prepare_material_catalog, names, backing, material_layer_height_mm,
+        material_min_layer_count, material_max_layer_count,
+        resources.materials_dir if resources else None,
+    ))
+    try:
+        return {"cached": await asyncio.shield(job)}
+    except asyncio.CancelledError:
+        # The worker may still be reading the embedded material archive.
+        await job
+        raise
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Selected material archive was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (CoreError, OSError, RuntimeError) as exc:
+        _handle_core_error(exc, "Material catalog preparation")
+    finally:
+        discard_project_resources(resources)
+
+
 def _parse_preview_replacement_regions(
     value: str | None,
 ) -> list[dict[str, str]] | None:
@@ -693,7 +740,7 @@ def _parse_preview_replacement_regions(
         )
     try:
         return [
-            ColorReplacementItem.model_validate(item).model_dump()
+            ColorReplacementItem.model_validate(item).model_dump(exclude_none=True)
             for item in parsed
         ]
     except ValidationError as exc:
@@ -949,13 +996,13 @@ async def convert_preview(
     is_dark: bool = Form(True, description="深色主题"),
     material_source: str = Form("lut", description="颜色来源: lut | material_archive"),
     selected_materials: list[str] | str | None = Form(None, description="已选耗材目录名列表"),
-    material_layer_count: int | None = Form(None, description="耗材模式叠色层数 (5-10)"),
+    material_layer_count: int | None = Form(None, description="耗材模式叠色层数 (5-30)"),
     material_dynamic_layer_count_enabled: bool = Form(
         False,
         description="启用耗材模式动态有效叠层数",
     ),
-    material_min_layer_count: int = Form(5, description="最小有效叠层数 (5-10)"),
-    material_max_layer_count: int = Form(10, description="最大有效叠层数 (5-10)"),
+    material_min_layer_count: int = Form(5, description="最小有效叠层数 (5-30)"),
+    material_max_layer_count: int = Form(10, description="最大有效叠层数 (5-30)"),
     material_delta_e00_tolerance: float = Form(
         0.5,
         description="短配方允许的 CIEDE2000 色差损失 (0-5)",
@@ -1279,6 +1326,8 @@ async def convert_preview(
         )
         _t_worker = time.perf_counter() - _worker_t0
         worker_completed = True
+    except MaterialArchiveUnavailableError as exc:
+        raise to_http_exception(exc, "preview material selection") from exc
     except (DynamicMaterialCandidateError, DynamicMaterialSolverError) as e:
         _handle_core_error(e, "preview generation")
     except BrokenProcessPool as e:
@@ -1420,8 +1469,9 @@ async def convert_preview(
                     cache_data = pickle.load(f)
             _t_pickle_load = time.perf_counter() - _t
 
-            # Load preview image from disk (worker saved as .png). Copy it so the
-            # file handle is closed before rollback cleanup can run on Windows.
+            # The worker saves a bounded screen image, separate from the full
+            # cache grid. Keep Pillow's normal image-read protection enabled.
+            # Copy it so rollback cleanup can close the file on Windows.
             with Image.open(worker_preview_png_path) as worker_preview_img:
                 preview_img = worker_preview_img.copy()
 
@@ -1765,7 +1815,7 @@ async def convert_preview(
             if worker_gradient_region_id_map_path is not None:
                 store.register_temp_file(session_id, worker_gradient_region_id_map_path)
 
-            # Register preview image (bed-rendered, for general display)
+            # Register the bounded preview image for general display.
             preview_bytes = _image_to_png_bytes(preview_img)
             preview_id = registry.register_bytes(session_id, preview_bytes, "preview.png")
 
@@ -1816,6 +1866,8 @@ async def convert_preview(
 
             dimensions: dict = {}
             if cache_data:
+                # Printable dimensions come from the model grid, never the
+                # bounded screen image loaded above.
                 dimensions = {
                     "width": cache_data.get("target_w", 0),
                     "height": cache_data.get("target_h", 0),
@@ -2371,6 +2423,41 @@ def get_segmented_glb_status(
             else None
         ),
     }
+
+
+@router.post("/keychain-anchor", response_model=KeychainAnchorResponse)
+async def resolve_keychain_anchor(
+    request: KeychainAnchorRequest,
+    store: SessionStore = Depends(get_session_store),
+    pool: WorkerPoolManager = Depends(get_worker_pool),
+) -> KeychainAnchorResponse:
+    """Calculate the same rotated attachment used by 3MF generation."""
+    session = _require_session(store, request.session_id)
+    cache = session.get("preview_cache")
+    if not isinstance(cache, dict):
+        raise HTTPException(status_code=409, detail=PREVIEW_CACHE_UNAVAILABLE_DETAIL)
+    metadata = get_preview_cache_metadata(cache)
+    mode = metadata.get("modeling_mode")
+    is_vector = getattr(mode, "value", mode) == "vector"
+    field = "keychain_vector_body" if is_vector else "mask_solid"
+    path = get_preview_cache_field_path(cache, field)
+    if path is None:
+        raise HTTPException(status_code=409, detail=PREVIEW_CACHE_UNAVAILABLE_DETAIL)
+    pixel_scale = metadata.get("pixel_scale")
+    if not pixel_scale:
+        pixel_scale = float(metadata["target_width_mm"]) / int(metadata["target_w"])
+    try:
+        x, y = await pool.submit(
+            worker_keychain_anchor,
+            path, get_preview_cache_field_path(cache, "backing_mask"), float(pixel_scale),
+            float(metadata["keychain_vector_mm_per_unit"]) if is_vector else None,
+            LoopProfile(request.width, request.length, request.hole, request.angle), request.preset,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=PREVIEW_CACHE_UNAVAILABLE_DETAIL) from exc
+    except KeychainPlacementError as exc:
+        raise to_http_exception(exc, "Keychain attachment") from exc
+    return KeychainAnchorResponse(x=x, y=y)
 
 
 @router.post(

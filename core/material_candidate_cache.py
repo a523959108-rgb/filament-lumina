@@ -47,6 +47,10 @@ from core.material_inverse_refinement import (
     MaterialInverseRefinementConfig,
     refine_material_matches,
 )
+from core.material_layer_dp import (
+    DEFAULT_STATE_CELL_LAB as _LAYER_DP_DEFAULT_CELL,
+    generate_layer_dp_recipes_cached,
+)
 
 
 PREVIEW_SAFE_CANDIDATE_BUDGET = 1_048_576
@@ -93,6 +97,12 @@ class MaterialCandidateCacheConfig:
         max_refine_bottom_prefixes: Reserved bottom prefix cap. (底部前缀数量上限)
         refine_bottom_neighbors: Bottom-prefix neighbors per inverse target.
             (每个反推目标使用的底部前缀邻居数)
+        layer_dp_min_layer_count: Layer counts at or above this use the
+            layer-wise DP generator (see :mod:`core.material_layer_dp`)
+            instead of random sampling when ``M ** N`` exceeds the budget.
+            ``0`` disables it. (达到该层数且无法穷举时改用逐层 DP；0 关闭)
+        layer_dp_state_cell_lab: Initial Lab merge cell for the DP.
+            (逐层 DP 初始 Lab 合并格)
     """
 
     candidate_budget: int
@@ -106,6 +116,14 @@ class MaterialCandidateCacheConfig:
     max_refine_top_suffixes: int = 4096
     max_refine_bottom_prefixes: int = 64
     refine_bottom_neighbors: int = 2
+    layer_dp_min_layer_count: int = 11
+    layer_dp_state_cell_lab: float = _LAYER_DP_DEFAULT_CELL
+    # Execution-only. batch_recipe_count still defines the seeded Sobol stream.
+    execution_batch_recipe_count: int | None = None
+
+    def uses_layer_dp(self, layer_count: int) -> bool:
+        threshold = int(self.layer_dp_min_layer_count)
+        return threshold > 0 and int(layer_count) >= threshold
 
     def __post_init__(self) -> None:
         if self.candidate_pool_multiplier is None:
@@ -201,6 +219,7 @@ class CandidateSelection:
     achieved_lab: np.ndarray
     pinned_mask: np.ndarray
     worker_count: int
+    build_info: dict[str, Any] | None = None
 
 
 def _recipe_dtype_for_material_count(material_count: int) -> np.dtype:
@@ -253,6 +272,18 @@ def _candidate_cache_parameters(
         "substrate": str(substrate),
         "candidate_budget": int(candidate_budget),
         **_candidate_configuration(effective_config),
+        # Only deep stacks carry this key so existing <=10-layer cache paths
+        # (and their on-disk files) stay byte-identical.
+        # 仅深叠层写入该键，保持 <=10 层既有缓存路径不变。
+        **(
+            {
+                "layer_dp": {
+                    "state_cell_lab": float(effective_config.layer_dp_state_cell_lab),
+                }
+            }
+            if effective_config.uses_layer_dp(int(layer_count))
+            else {}
+        ),
     }
 
 
@@ -334,22 +365,25 @@ def _predict_candidate_srgb_lab(
     materials: list[MaterialParams],
     layer_height_mm: float,
     substrate: str,
+    execution_rows: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     affines = _compute_material_affines(materials, float(layer_height_mm))
     substrate_rgb = _substrate_linear(substrate)
     recipe_arr = np.asarray(recipes)
-    colors = np.empty((recipe_arr.shape[0], 3), dtype=np.float64)
-    colors[:] = substrate_rgb
-
-    for layer_index in range(recipe_arr.shape[1]):
-        material_indices = recipe_arr[:, layer_index]
-        colors = (
-            affines.a[material_indices] * colors
-            + affines.b[material_indices]
-        )
-
-    achieved_srgb = linear_to_srgb_uint8(np.clip(colors, 0.0, 1.0))
-    achieved_lab = rgb_to_lab(achieved_srgb).astype(np.float32, copy=False)
+    row_count = len(recipe_arr)
+    block_rows = max(1, int(execution_rows or row_count))
+    achieved_srgb = np.empty((row_count, 3), dtype=np.uint8)
+    achieved_lab = np.empty((row_count, 3), dtype=np.float32)
+    for start in range(0, row_count, block_rows):
+        end = min(start + block_rows, row_count)
+        block = recipe_arr[start:end]
+        colors = np.empty((len(block), 3), dtype=np.float64)
+        colors[:] = substrate_rgb
+        for material_indices in block.T:
+            colors = affines.a[material_indices] * colors + affines.b[material_indices]
+        np.clip(colors, 0.0, 1.0, out=colors)
+        achieved_srgb[start:end] = linear_to_srgb_uint8(colors)
+        achieved_lab[start:end] = rgb_to_lab(achieved_srgb[start:end])
     return achieved_srgb, achieved_lab
 
 
@@ -360,6 +394,7 @@ def _predict_recipe_batch(
     layer_height_mm: float,
     substrate: str,
     recipe_dtype_name: str,
+    execution_rows: int | None = None,
 ) -> CandidatePredictionBatch:
     recipe_dtype = np.dtype(recipe_dtype_name)
     recipe_arr = np.asarray(recipes, dtype=recipe_dtype)
@@ -368,6 +403,7 @@ def _predict_recipe_batch(
         materials=materials,
         layer_height_mm=float(layer_height_mm),
         substrate=substrate,
+        execution_rows=execution_rows,
     )
     return CandidatePredictionBatch(
         recipes=recipe_arr,
@@ -418,6 +454,7 @@ def _predict_low_discrepancy_recipe_batch(
     layer_height_mm: float,
     substrate: str,
     recipe_dtype_name: str,
+    execution_rows: int | None = None,
 ) -> CandidatePredictionBatch:
     recipe_dtype = np.dtype(recipe_dtype_name)
     recipes = _low_discrepancy_recipes(
@@ -425,12 +462,14 @@ def _predict_low_discrepancy_recipe_batch(
         layer_count=int(layer_count),
         count=int(count),
         seed=int(seed),
+        block_rows=execution_rows,
     ).astype(recipe_dtype, copy=False)
     achieved_srgb, achieved_lab = _predict_candidate_srgb_lab(
         recipes=recipes,
         materials=materials,
         layer_height_mm=float(layer_height_mm),
         substrate=substrate,
+        execution_rows=execution_rows,
     )
     return CandidatePredictionBatch(
         recipes=recipes,
@@ -592,13 +631,16 @@ def _streaming_candidate_selection(
     budget = min(requested_budget, total_count)
     worker_count = _resolve_candidate_build_worker_count(config.build_worker_count)
     chunk_size = max(1, int(config.batch_recipe_count))
+    execution_rows = config.execution_batch_recipe_count
+    if execution_rows is not None:
+        execution_rows = max(1, int(execution_rows))
     if total_count <= budget:
         exact_count = int(total_count)
         exact_recipes = np.empty((exact_count, int(layer_count)), dtype=recipe_dtype)
         achieved_srgb = np.empty((exact_count, 3), dtype=np.uint8)
         achieved_lab = np.empty((exact_count, 3), dtype=np.float32)
         pinned_mask = np.zeros(exact_count, dtype=bool)
-        counts = _chunk_counts(exact_count, chunk_size)
+        counts = _chunk_counts(exact_count, execution_rows or chunk_size)
         starts: list[int] = []
         offset = 0
         for count in counts:
@@ -748,13 +790,44 @@ def _streaming_candidate_selection(
                 layer_height_mm=float(layer_height_mm),
                 substrate=substrate,
                 recipe_dtype_name=recipe_dtype.name,
+                execution_rows=execution_rows,
             ),
             pinned=True,
         )
 
+    build_info: dict[str, Any] | None = None
+    use_layer_dp = config.uses_layer_dp(int(layer_count))
+    if use_layer_dp:
+        dp_t0 = time.perf_counter()
+        dp_result = generate_layer_dp_recipes_cached(
+            materials,
+            int(layer_count),
+            float(layer_height_mm),
+            substrate,
+            state_cell_lab=float(config.layer_dp_state_cell_lab),
+            max_states=max(material_count, budget - selected_count),
+            recipe_dtype=recipe_dtype,
+        )
+        dp_srgb = linear_to_srgb_uint8(dp_result.linear_rgb)
+        _consume_batch(
+            CandidatePredictionBatch(
+                recipes=dp_result.recipes,
+                achieved_srgb=dp_srgb,
+                achieved_lab=rgb_to_lab(dp_srgb).astype(np.float32, copy=False),
+            ),
+            pinned=False,
+        )
+        build_info = {
+            **dp_result.metadata(),
+            "elapsed_seconds": time.perf_counter() - dp_t0,
+        }
+
     total_stream_count = max(0, budget - selected_count)
     multiplier = max(1, int(config.candidate_pool_multiplier))
-    if multiplier > 1:
+    if multiplier > 1 and not use_layer_dp:
+        # The DP output already covers the reachable gamut; random
+        # oversampling of a deep recipe space would only cost time.
+        # DP 已覆盖可达色域，深叠层随机过采样只会浪费时间。
         total_stream_count += budget * (multiplier - 1)
 
     counts = _chunk_counts(total_stream_count, chunk_size)
@@ -782,6 +855,7 @@ def _streaming_candidate_selection(
                     layer_height_mm=float(layer_height_mm),
                     substrate=substrate,
                     recipe_dtype_name=recipe_dtype.name,
+                    execution_rows=execution_rows,
                 )
             )
 
@@ -794,11 +868,12 @@ def _streaming_candidate_selection(
                 _submit_next(executor)
 
     return CandidateSelection(
-        recipes=selected[:selected_count].copy(),
-        achieved_srgb=selected_srgb[:selected_count].copy(),
-        achieved_lab=selected_lab[:selected_count].copy(),
-        pinned_mask=pinned_mask[:selected_count].copy(),
+        recipes=selected[:selected_count],
+        achieved_srgb=selected_srgb[:selected_count],
+        achieved_lab=selected_lab[:selected_count],
+        pinned_mask=pinned_mask[:selected_count],
         worker_count=worker_count,
+        build_info=build_info,
     )
 
 
@@ -1141,6 +1216,14 @@ def build_material_candidate_runtime(
         ],
         "canonical_materials": describe_palette(canonical_materials),
     }
+    if cfg.uses_layer_dp(int(layer_count)):
+        # ``layer_dp`` must equal the cache-key entry from
+        # ``_candidate_cache_parameters`` even when the recipe space was small
+        # enough to enumerate exactly; otherwise the saved runtime is never
+        # found again. Build stats live separately and only exist for DP runs.
+        metadata["layer_dp"] = {"state_cell_lab": float(cfg.layer_dp_state_cell_lab)}
+    if selection.build_info is not None:
+        metadata["layer_dp_build"] = selection.build_info
     return MaterialCandidateRuntime(
         candidate_recipes=selection.recipes,
         achieved_srgb=selection.achieved_srgb,
@@ -1190,6 +1273,8 @@ def save_material_candidate_runtime(
         "grid_resolution", "candidate_pool_multiplier", "batch_recipe_count",
         "seed", "inverse_refinement",
     )}
+    if "layer_dp" in metadata:
+        expected["layer_dp"] = metadata["layer_dp"]
     npz_path = _find_cache_record(directory, expected)
     if npz_path is None:
         npz_path = directory / f"candidate-{runtime.cache_id}.npz"

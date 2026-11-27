@@ -36,6 +36,16 @@ describe("normalizeApiPath and isLocalOnlyApiPath", () => {
     expect(isLocalOnlyApiPath("/system/settings")).toBe(true);
     expect(isLocalOnlyApiPath("/api/slicer/detect")).toBe(true);
     expect(isLocalOnlyApiPath("/extractor/gradient-card-materials")).toBe(true);
+    expect(isLocalOnlyApiPath("/extractor/public-gradient-card-materials")).toBe(
+      false,
+    );
+    expect(isLocalOnlyApiPath("/contributions/connection")).toBe(true);
+    expect(isLocalOnlyApiPath("/community/activity/materials")).toBe(true);
+    expect(isLocalOnlyApiPath("/resources/source")).toBe(true);
+    expect(isLocalOnlyApiPath("/resources/materials/install")).toBe(true);
+    expect(isLocalOnlyApiPath("/material-sync/install-from-registry")).toBe(
+      true,
+    );
     expect(
       isLocalOnlyApiPath(
         "/system/machine-registry/bed-model?device_profile_id=x",
